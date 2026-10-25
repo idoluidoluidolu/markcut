@@ -38,12 +38,31 @@ Future<T?> showLibraryTileMenu<T>(
   if (box is! RenderBox || !box.attached || !box.hasSize) {
     return Future<T?>.value();
   }
-  final rect = box.localToGlobal(Offset.zero) & box.size;
+  return showTileMenuAt<T>(
+    tileContext,
+    rect: box.localToGlobal(Offset.zero) & box.size,
+    preview: preview,
+    actions: actions,
+    title: title,
+    radius: radius,
+  );
+}
+
+/// 同 [showLibraryTileMenu]，只是位置直接給（螢幕座標）：浮起來的那一塊
+/// 不是一個 widget 的時候用（例如照片上的一塊馬賽克）
+Future<T?> showTileMenuAt<T>(
+  BuildContext context, {
+  required Rect rect,
+  required Widget preview,
+  required List<LibraryMenuAction<T>> actions,
+  String? title,
+  double radius = kTileRadius,
+}) {
   // 對話框掛在最上層的 Navigator，那裡的佈景是 App 預設的深色；
   // 長按的是淺色頁，照它的佈景畫
-  final theme = Theme.of(tileContext);
+  final theme = Theme.of(context);
   return showGeneralDialog<T>(
-    context: tileContext,
+    context: context,
     barrierDismissible: true,
     barrierLabel: '關閉',
     barrierColor: Colors.black.withValues(alpha: 0.5),

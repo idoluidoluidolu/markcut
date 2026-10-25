@@ -25,6 +25,7 @@ import '../services/mosaic_patch_painter.dart';
 import '../services/watermark_renderer.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/font_picker.dart';
+import '../widgets/library_tile_menu.dart';
 import '../widgets/mosaic_outline.dart';
 import '../widgets/watermark_layer.dart';
 import '../widgets/watermark_panel.dart';
@@ -81,6 +82,32 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 蓋在臉上眼睛鼻子還認得出來（截圖實測）
   final MosaicStyle _mzStyle = MosaicStyle(strength: 0.85);
   bool _mzOval = true;
+
+  /// 下面那排的「大小」（全部一起）：1＝找臉／新加當下的大小。拉動＝每一塊
+  /// 照自己現在的大小一起放大縮小（筆畫是粗細）；要單獨調哪一塊就兩指捏它
+  double _mzSize = 1.0;
+
+  /// 大小滑桿按下那一刻的值與每一塊的大小：拖動中一律照這份算倍率，
+  /// 夾到上下限的那幾塊才不會越拉越歪
+  double _mzSizeFrom = 1.0;
+  List<double> _mzSizeBase = const [];
+
+  /// 「亮一下」：剛加的、點到的那幾塊閃一圈白光就收。照片上的馬賽克不畫框
+  ///（使用者指定），要認出是哪一塊只能靠這個
+  Set<int> _flashIds = const {};
+  int _flashToken = 0;
+
+  /// 這一次兩指捏的是哪一塊（馬賽克模式：捏在哪塊上就縮放哪塊，臉也行）
+  int _pinchMosaic = -1;
+
+  /// 這一手出現過兩指：放開時那一下不算「點」（不然捏完臉會順便被切成不碼）
+  bool _pinchHappened = false;
+
+  /// 預覽畫布：手指的螢幕座標要換成畫布座標，才知道捏、按在哪一塊上
+  final _canvasKey = GlobalKey();
+
+  /// 上面那排馬賽克縮圖：加了新的一塊就捲到最後，看得到它
+  final _stripCtrl = ScrollController();
 
   /// 找臉中：工具鈕轉圈、不重複送
   bool _findingFaces = false;
@@ -407,6 +434,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     if (_mosaicMode) 'mosaicMode': true,
     if (_mosaicMode) 'mzStyle': _mzStyle.toJson(),
     if (_mosaicMode) 'mzOval': _mzOval,
+    if (_mosaicMode) 'mzSize': _mzSize,
   };
 
   String get _stateJson {
@@ -539,6 +567,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         ..feather = st.feather;
     }
     if (j['mzOval'] is bool) _mzOval = j['mzOval'] as bool;
+    if (j['mzSize'] is num) {
+      _mzSize = (j['mzSize'] as num).toDouble().clamp(0.5, 2.0);
+    }
     setState(() {
       _settings.copyMarksFrom(wm);
       _grade.copyFrom(
@@ -560,6 +591,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _wmPart = WmPart.none;
       _selMosaic = -1;
       _selExtra = -1;
+      _flashIds = const {};
       _sync++;
     });
   }
@@ -588,6 +620,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     _canvasImg?.dispose();
     _liveTick.dispose();
     _wmFrameInfo.dispose();
+    _stripCtrl.dispose();
     super.dispose();
   }
 
@@ -1060,7 +1093,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           children: [
             IgnorePointer(
               child: Container(
-                height: 40,
+                // 馬賽克模式的面板不用捲（高度是算好的，見 _mzPanelHeight），
+                // 漸層只留一小截：40 的話最後一排滑桿整條被罩成灰的
+                height: _mosaicMode ? _kMzBarFade : 40,
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topCenter,
@@ -1077,16 +1112,25 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 top: false,
                 child: Row(
                   children: [
-                    // 馬賽克模式沒有範本：只留匯出，整條寬
-                    if (!_mosaicMode) ...[
-                      Expanded(
-                        child: secondaryAction(
-                          label: '存成範本',
-                          onPressed: _exporting ? null : _savePresetFromBar,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                    ],
+                    // 馬賽克模式沒有範本：那個位置換成「新增馬賽克」——
+                    // 寫明是「再加一塊」（以前找臉／方框／筆刷三顆擺在
+                    // 面板最下面，看不出是加新的，使用者回報不直覺）。
+                    // 塗抹中先收掉：筆刷還開著又疊一張選單會打架
+                    Expanded(
+                      child: _mosaicMode
+                          ? secondaryAction(
+                              label: '新增馬賽克',
+                              icon: Icons.add,
+                              onPressed: _exporting || _brushMode
+                                  ? null
+                                  : _askAddMosaic,
+                            )
+                          : secondaryAction(
+                              label: '存成範本',
+                              onPressed: _exporting ? null : _savePresetFromBar,
+                            ),
+                    ),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: primaryAction(
                         label: '匯出',
@@ -1105,6 +1149,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   Widget _buildMosaics(double w, double h) {
     final children = <Widget>[];
+    final glows = <Widget>[];
     for (var i = 0; i < _mosaics.length; i++) {
       final m = _mosaics[i];
       Rect rect;
@@ -1139,6 +1184,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         if (rect.width <= 0 || rect.height <= 0) continue;
       }
       final hitId = (kind: 0, index: i, part: WmPart.none, logo: -1);
+      // 「亮一下」：疊在所有馬賽克上面（迴圈跑完才放進去）
+      if (_mosaicMode && _flashIds.contains(i)) {
+        glows.add(
+          Positioned.fromRect(
+            rect: rect.inflate(_FlashGlow.pad),
+            child: IgnorePointer(
+              child: _FlashGlow(
+                key: ValueKey('flash-$_flashToken-$i'),
+                oval: m.oval && !m.isStroke,
+              ),
+            ),
+          ),
+        );
+      }
       if (m.off) {
         // 點掉的臉：只留一圈虛線，點一下就回來（點擊由上面的判定層
         // 統一處理，見 _phTapAt）
@@ -1251,6 +1310,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
             onTap: () {
               if (faceTap) {
                 _toggleFace(i);
+              } else if (_mosaicMode) {
+                _flash({i});
               } else if (_selMosaic == i) {
                 _editMosaic(i);
               } else {
@@ -1271,23 +1332,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
               fit: StackFit.expand,
               children: [
                 effect,
-                // 馬賽克模式的臉：一圈淡白細線，看得出「這是找到的臉、
-                // 點得動」（點掉的是虛線，見上面）
-                if (faceTap)
-                  IgnorePointer(
-                    child: CustomPaint(
-                      painter: MosaicOutlinePainter(
-                        oval: m.oval,
-                        dashed: false,
-                        color: Colors.white.withValues(alpha: 0.85),
-                        width: 1.2,
-                      ),
-                    ),
-                  ),
                 // 選取框跟浮水印同一套：琥珀細框（白框落在亮照片
                 // 或白色馬賽克上會整個看不見，見 theme 的 kSelect）。
-                // 筆刷塗抹中不畫——正在畫的那一筆被框住很干擾
-                if (_selMosaic == i && !_brushMode)
+                // 筆刷塗抹中不畫——正在畫的那一筆被框住很干擾。
+                // 馬賽克模式整個不畫框（使用者：「馬賽克不要有邊框」）：
+                // 照片上看到的就是成品，認哪一塊靠「亮一下」
+                if (_selMosaic == i && !_brushMode && !_mosaicMode)
                   IgnorePointer(
                     child: m.oval
                         ? CustomPaint(
@@ -1310,21 +1360,120 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         ),
       );
     }
+    children.addAll(glows);
     return Stack(clipBehavior: Clip.hardEdge, children: children);
   }
 
   void _addMosaic() {
     _pushUndo();
+    if (_mosaicMode) {
+      // 馬賽克模式：照下面那排選的樣式、形狀、大小；放在空的地方、
+      // 亮一下，不選取（照片上沒有框，選了也看不出來）
+      final scale = (_kMzNewScale * _mzSize).clamp(0.05, 3.0);
+      final at = _freeSpot(scale);
+      setState(() {
+        _mosaics.add(
+          PhotoMosaic(
+            x: at.dx,
+            y: at.dy,
+            scale: scale,
+            style: _mzStyle.copy(),
+            oval: _mzOval,
+          ),
+        );
+        _selMosaic = -1;
+        _wmPart = WmPart.none;
+        _selExtra = -1;
+      });
+      _flash({_mosaics.length - 1});
+      return;
+    }
     setState(() {
-      // 馬賽克模式：照下面那排選的樣式與形狀
-      _mosaics.add(
-        _mosaicMode
-            ? PhotoMosaic(style: _mzStyle.copy(), oval: _mzOval)
-            : PhotoMosaic(),
-      );
+      _mosaics.add(PhotoMosaic());
       _selMosaic = _mosaics.length - 1;
       _wmPart = WmPart.none;
       _selExtra = -1;
+    });
+  }
+
+  /// 馬賽克模式新加一塊方框的大小（短邊比例）：要蓋的通常是招牌、車牌、
+  /// 包包上的標誌這種小東西；一般模式的 0.72 一放下去就蓋掉半張照片
+  static const double _kMzNewScale = 0.4;
+
+  /// 新的一塊放哪（0~1）：照片上挑跟現有馬賽克重疊最少的位置，一樣少就挑
+  /// 離正中央近的。以前一律放正中央，連按兩次方框第二塊剛好疊在第一塊上，
+  /// 看起來像「只能加一塊」（使用者回報）
+  Offset _freeSpot(double scale) {
+    final img = _photoImg;
+    final w = (img?.width ?? 1000).toDouble();
+    final h = (img?.height ?? 1000).toDouble();
+    final taken = [
+      for (final m in _mosaics)
+        m.isStroke ? _strokeRectPx(m, w, h) : photoMosaicRect(m, w, h),
+    ];
+    final side = scale * math.min(w, h);
+    var best = const Offset(0.5, 0.5);
+    var bestCover = double.infinity, bestDist = double.infinity;
+    const steps = [0.2, 0.35, 0.5, 0.65, 0.8];
+    for (final cy in steps) {
+      for (final cx in steps) {
+        // 出界太多的不要：方形會被裁小、橢圓會缺一大角
+        if (cx * w < side * 0.35 ||
+            (1 - cx) * w < side * 0.35 ||
+            cy * h < side * 0.35 ||
+            (1 - cy) * h < side * 0.35) {
+          continue;
+        }
+        final r = photoMosaicRect(
+          PhotoMosaic(x: cx, y: cy, scale: scale, oval: _mzOval),
+          w,
+          h,
+        );
+        if (r.width <= 0 || r.height <= 0) continue;
+        var cover = 0.0;
+        for (final t in taken) {
+          final o = r.intersect(t);
+          if (o.width > 0 && o.height > 0) cover += o.width * o.height;
+        }
+        cover /= r.width * r.height;
+        final dist = (cx - 0.5) * (cx - 0.5) + (cy - 0.5) * (cy - 0.5);
+        if (cover < bestCover - 1e-6 ||
+            ((cover - bestCover).abs() <= 1e-6 && dist < bestDist)) {
+          best = Offset(cx, cy);
+          bestCover = cover;
+          bestDist = dist;
+        }
+      }
+    }
+    return best;
+  }
+
+  /// 筆畫的範圍（照片像素）：跟 _buildMosaics、匯出同一個算式
+  Rect _strokeRectPx(PhotoMosaic m, double w, double h) {
+    final pts = [
+      for (var k = 0; k + 1 < m.stroke!.length; k += 2)
+        Offset(m.stroke![k] * w, m.stroke![k + 1] * h),
+    ];
+    final brushPx = m.brush * math.min(w, h);
+    return strokeBoundsPx(pts, brushPx, strokeFeatherPx(m.style, brushPx));
+  }
+
+  /// 讓這幾塊「亮一下」；剛加的捲到縮圖那排最後看得到
+  void _flash(Set<int> ids) {
+    if (ids.isEmpty) return;
+    setState(() {
+      _flashIds = ids;
+      _flashToken++;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_stripCtrl.hasClients) return;
+      final i = ids.reduce(math.max);
+      if (i < _mosaics.length - 1) return;
+      _stripCtrl.animateTo(
+        _stripCtrl.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
     });
   }
 
@@ -1348,6 +1497,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final add = <PhotoMosaic>[];
     for (final f in found) {
       final m = faceMosaic(f, w, h, style: _mzStyle, oval: _mzOval);
+      // 大小滑桿拉過：新找到的臉也照同一個大小，跟其他塊一致
+      m.scale = (m.scale * _mzSize).clamp(0.02, 3.0);
       final r = photoMosaicRect(m, w, h);
       final dup = [
         ..._mosaics,
@@ -1360,10 +1511,13 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       return;
     }
     if (!auto) _pushUndo();
+    final from = _mosaics.length;
     setState(() {
       _mosaics.addAll(add);
       _selMosaic = -1;
     });
+    // 自己按的那次：新碼上的臉亮一下（一進來自動找的不用，整張都是新的）
+    if (!auto) _flash({for (var i = from; i < _mosaics.length; i++) i});
     // 找的途中使用者已經動手改了就不重設（那些改動要算數）
     if (auto && _undoStack.isEmpty) _initialJson = _stateJson;
   }
@@ -1394,221 +1548,513 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     }
   }
 
-  /// 馬賽克模式的面板（取代浮水印面板）：樣式＋形狀、濃度（純色是顏色）、
-  /// 三個工具。改樣式＝每一塊一起改
+  /// 馬賽克模式的面板（取代浮水印面板；使用者在畫布選的甲＋二）：
+  /// 最上面一排每一塊的縮圖＋虛線加號、效果＋形狀、大小（全部一起）、
+  /// 濃度（純色是顏色）。改樣式／大小＝每一塊一起改；新增在浮動列的
+  /// 「新增馬賽克」或縮圖那排最後的加號
   Widget _mosaicModePanel() {
-    Widget chip(String label, int type) {
-      final on = _mzStyle.type == type;
-      return Padding(
-        padding: const EdgeInsets.only(right: 8),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(999),
-          onTap: on
-              ? null
-              : () {
-                  _pushUndo();
-                  setState(() => _mzApply((s) => s.type = type));
-                },
-          child: Container(
-            height: 36,
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            alignment: Alignment.center,
-            // 設定面板裡的「選項」一律白框白字＋亮底（同樣式表的 chip）
-            decoration: BoxDecoration(
-              color: on ? kPanelHi : Colors.transparent,
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(
-                color: on ? kAmber : kClipBorder,
-                width: on ? 1.5 : 1,
-              ),
-            ),
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: on ? FontWeight.w700 : FontWeight.w400,
-                color: kText,
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    Widget shapeBtn(bool oval) {
-      final on = _mzOval == oval;
-      return InkWell(
-        onTap: on
-            ? null
-            : () {
-                _pushUndo();
-                setState(() {
-                  _mzOval = oval;
-                  for (final m in _mosaics) {
-                    if (!m.isStroke) m.oval = oval;
-                  }
-                });
-              },
+    Widget tile({
+      required bool on,
+      required String label,
+      required Widget art,
+      required VoidCallback onTap,
+      int flex = 68,
+    }) => Expanded(
+      flex: flex,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: on ? null : onTap,
         child: Container(
-          width: 42,
-          height: 36,
-          alignment: Alignment.center,
-          color: on ? kPanelHi : Colors.transparent,
-          child: Icon(
-            oval ? Icons.circle_outlined : Icons.crop_square,
-            size: 19,
-            color: on ? kText : kTextDim,
-            semanticLabel: oval ? '圓形' : '方形',
+          constraints: const BoxConstraints(minHeight: 62),
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
+          // 設定面板裡的「選項」一律白框白字＋亮底（同樣式表的 chip）
+          decoration: BoxDecoration(
+            color: on ? kPanelHi : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: on ? kAmber : kClipBorder,
+              width: on ? 1.5 : 1,
+            ),
           ),
-        ),
-      );
-    }
-
-    Widget tool(
-      IconData icon,
-      String label,
-      VoidCallback? onTap, {
-      bool busy = false,
-    }) => InkWell(
-      borderRadius: BorderRadius.circular(10),
-      onTap: onTap,
-      child: SizedBox(
-        width: 72,
-        height: 62,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            SizedBox(
-              width: 22,
-              height: 22,
-              child: busy
-                  ? const Padding(
-                      padding: EdgeInsets.all(2),
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Icon(icon, size: 22, color: kText),
-            ),
-            const SizedBox(height: 5),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 10.5,
-                letterSpacing: 0.5,
-                color: kText,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              chip('像素化', 0),
-              chip('模糊', 1),
-              chip('純色', 2),
-              const Spacer(),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(999),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: kClipBorder),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [shapeBtn(true), shapeBtn(false)],
+              art,
+              const SizedBox(height: 6),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                    color: kText,
                   ),
                 ),
               ),
             ],
           ),
+        ),
+      ),
+    );
+
+    void setType(int type) {
+      _pushUndo();
+      setState(() => _mzApply((s) => s.type = type));
+    }
+
+    void setOval(bool oval) {
+      _pushUndo();
+      setState(() {
+        _mzOval = oval;
+        for (final m in _mosaics) {
+          if (!m.isStroke) m.oval = oval;
+        }
+      });
+    }
+
+    Widget shapeIcon(IconData icon, bool on) =>
+        Icon(icon, size: 22, color: on ? kText : kTextDim);
+
+    return SingleChildScrollView(
+      // 底下讓出浮動鈕列（字級放大塞不下時捲得到最後一排）
+      padding: EdgeInsets.fromLTRB(16, 10, 16, _mzBarHeight(context) + 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _mosaicStrip(),
           const SizedBox(height: 14),
-          if (_mzStyle.type != 2)
-            sliderRow(
-              label: '濃度',
-              value: _mzStyle.strength,
-              min: 0,
-              max: 1,
-              readout: '${(_mzStyle.strength * 100).round()}',
-              unit: '%',
-              onChangeStart: (_) => _pushUndo(),
-              onChanged: (v) {
-                _mzApply((s) => s.strength = v);
-                _liveRepaint();
-              },
-              onChangeEnd: (_) => _liveEnd(),
-            )
-          else
-            SizedBox(
-              height: 40,
-              child: Row(
-                children: [
-                  const SizedBox(
-                    width: kSliderLabelW,
-                    child: Text(
-                      '顏色',
-                      style: TextStyle(fontSize: 12, color: kTextDim),
-                    ),
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                tile(
+                  on: _mzStyle.type == 0,
+                  label: '像素化',
+                  art: const _MzSwatch(0),
+                  onTap: () => setType(0),
+                ),
+                const SizedBox(width: 8),
+                tile(
+                  on: _mzStyle.type == 1,
+                  label: '模糊',
+                  art: const _MzSwatch(1),
+                  onTap: () => setType(1),
+                ),
+                const SizedBox(width: 8),
+                tile(
+                  on: _mzStyle.type == 2,
+                  label: '純色',
+                  art: _MzSwatch(2, color: _mzStyle.color),
+                  onTap: () => setType(2),
+                ),
+                Container(
+                  width: 1,
+                  margin: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 12,
                   ),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(14),
-                    onTap: () async {
-                      final picked = await pickColor(
-                        context,
-                        Color(_mzStyle.color),
-                      );
-                      if (picked == null || !mounted) return;
-                      _pushUndo();
-                      setState(() => _mzApply((s) => s.color = picked));
-                    },
-                    child: Container(
-                      width: 26,
-                      height: 26,
-                      decoration: BoxDecoration(
-                        color: Color(_mzStyle.color),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: kBorder, width: 1.5),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+                  color: kClipBorder,
+                ),
+                tile(
+                  on: _mzOval,
+                  label: '圓形',
+                  flex: 54,
+                  art: shapeIcon(Icons.circle_outlined, _mzOval),
+                  onTap: () => setOval(true),
+                ),
+                const SizedBox(width: 8),
+                tile(
+                  on: !_mzOval,
+                  label: '方形',
+                  flex: 54,
+                  art: shapeIcon(Icons.crop_square, !_mzOval),
+                  onTap: () => setOval(false),
+                ),
+              ],
             ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              tool(
-                Icons.face_retouching_natural,
-                '找臉',
-                _findingFaces ? null : () => _findFaces(),
-                busy: _findingFaces,
-              ),
-              tool(Icons.crop_square, '方框', _addMosaic),
-              tool(Icons.brush_outlined, '筆刷', () {
-                setState(() {
-                  // 筆刷照下面那排選的樣式畫
-                  _brushStyle
-                    ..type = _mzStyle.type
-                    ..strength = _mzStyle.strength
-                    ..feather = _mzStyle.feather
-                    ..color = _mzStyle.color;
-                  _brushMode = true;
-                  _selMosaic = -1;
-                  _fsView = true;
-                  _fsBrushOpen = true;
-                });
-              }),
-            ],
+          ),
+          const SizedBox(height: 10),
+          // 滑桿拖動中只重畫預覽（_liveRepaint），不整頁 setState；這兩條
+          // 自己跟著同一個訊號重畫，拇指才跟得上手指（以前放手才跳過去）
+          ValueListenableBuilder<int>(
+            valueListenable: _liveTick,
+            builder: (context, _, _) => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                sliderRow(
+                  label: '大小',
+                  value: _mzSize,
+                  min: 0.5,
+                  max: 2.0,
+                  readout: '${(_mzSize * 100).round()}',
+                  unit: '%',
+                  onChangeStart: (_) => _mzSizeStart(),
+                  onChanged: _mzSizeChange,
+                  onChangeEnd: (_) => _liveEnd(),
+                ),
+                if (_mzStyle.type != 2)
+                  sliderRow(
+                    label: '濃度',
+                    value: _mzStyle.strength,
+                    min: 0,
+                    max: 1,
+                    readout: '${(_mzStyle.strength * 100).round()}',
+                    unit: '%',
+                    onChangeStart: (_) => _pushUndo(),
+                    onChanged: (v) {
+                      _mzApply((s) => s.strength = v);
+                      _liveRepaint();
+                    },
+                    onChangeEnd: (_) => _liveEnd(),
+                  )
+                else
+                  SizedBox(
+                    height: 40,
+                    child: Row(
+                      children: [
+                        const SizedBox(
+                          width: kSliderLabelW,
+                          child: Text(
+                            '顏色',
+                            style: TextStyle(fontSize: 12, color: kTextDim),
+                          ),
+                        ),
+                        InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: () async {
+                            final picked = await pickColor(
+                              context,
+                              Color(_mzStyle.color),
+                            );
+                            if (picked == null || !mounted) return;
+                            _pushUndo();
+                            setState(() => _mzApply((s) => s.color = picked));
+                          },
+                          child: Container(
+                            width: 26,
+                            height: 26,
+                            decoration: BoxDecoration(
+                              color: Color(_mzStyle.color),
+                              shape: BoxShape.circle,
+                              border: Border.all(color: kBorder, width: 1.5),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
           ),
         ],
       ),
     );
+  }
+
+  /// 馬賽克模式浮動鈕列的漸層高度（一般模式是 40）
+  static const double _kMzBarFade = 12;
+
+  /// 馬賽克模式浮動鈕列佔掉的高度：漸層＋鈕（含觸控留白 48）＋下緣＋安全區
+  double _mzBarHeight(BuildContext context) =>
+      _kMzBarFade + 48 + 10 + MediaQuery.paddingOf(context).bottom;
+
+  /// 馬賽克模式的下半部固定這麼高：四排（縮圖、效果、大小、濃度）＋浮動鈕列
+  /// 剛好放得下、不用捲，剩下的高度全給照片（手機越高照片越大）。
+  /// 以前是上 6 下 4 的比例：面板塞不下，最後一排滑桿被鈕列的漸層蓋成灰的
+  double _mzPanelHeight(BuildContext context) {
+    // 字級放大時多留一點（磚上的字、滑桿的字跟著變高）；再大就捲
+    final t = (MediaQuery.textScalerOf(context).scale(12) / 12).clamp(1.0, 2.0);
+    const content = 10 + 52 + 14 + 66 + 10 + 34 + 40 + 6;
+    return content + (t - 1) * 40 + _mzBarHeight(context);
+  }
+
+  /// 下半部（面板＋浮動鈕列）：一般模式照比例分（上 4 下 6），
+  /// 馬賽克模式固定高度、其餘全給照片
+  Widget _panelArea(Widget child) => _mosaicMode
+      ? SizedBox(height: _mzPanelHeight(context), child: child)
+      : Expanded(flex: 6, child: child);
+
+  /// 大小滑桿按下去：拍一次上一步，記下這一刻每一塊的大小
+  void _mzSizeStart() {
+    _pushUndo();
+    _mzSizeFrom = _mzSize;
+    _mzSizeBase = [for (final m in _mosaics) m.isStroke ? m.brush : m.scale];
+  }
+
+  /// 大小滑桿每一格：每一塊照按下去那一刻的大小一起乘上同一個倍率
+  ///（筆畫乘的是粗細）。只重畫預覽，放手才整頁補一次
+  void _mzSizeChange(double v) {
+    _mzSize = v;
+    final f = v / _mzSizeFrom;
+    for (var i = 0; i < _mosaics.length && i < _mzSizeBase.length; i++) {
+      final m = _mosaics[i];
+      if (m.isStroke) {
+        m.brush = (_mzSizeBase[i] * f).clamp(0.02, 0.6);
+      } else {
+        m.scale = (_mzSizeBase[i] * f).clamp(0.02, 3.0);
+      }
+    }
+    _liveRepaint();
+  }
+
+  /// 最上面那排：每一塊馬賽克一格縮圖（照片上不畫框，有幾塊、加了沒，
+  /// 在這裡一眼看得到），最後一格虛線加號＝新增。點縮圖＝那一塊亮一下
+  ///（臉是碼／不碼切換，跟點照片上的臉一樣）；長按＝壓暗＋刪除
+  Widget _mosaicStrip() => SizedBox(
+    height: 52,
+    child: ListView(
+      controller: _stripCtrl,
+      scrollDirection: Axis.horizontal,
+      children: [
+        for (var i = 0; i < _mosaics.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(right: 10),
+            child: _mosaicThumb(i),
+          ),
+        Semantics(
+          button: true,
+          label: '新增馬賽克',
+          excludeSemantics: true,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: _brushMode || _findingFaces ? null : _askAddMosaic,
+            child: CustomPaint(
+              painter: const _DashedTilePainter(),
+              child: SizedBox(
+                width: 52,
+                height: 52,
+                // 找臉中這一格轉圈（按了「自動碼人臉」選單就收了，
+                // 要有個地方看得出還在找）
+                child: _findingFaces
+                    ? const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.add, size: 24, color: kText),
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget _mosaicThumb(int i) {
+    final m = _mosaics[i];
+    return Builder(
+      builder: (tileCtx) => Semantics(
+        button: true,
+        label: m.face ? (m.off ? '沒碼的臉' : '臉') : (m.isStroke ? '筆刷' : '方框'),
+        excludeSemantics: true,
+        child: GestureDetector(
+          onTap: () => _thumbTap(i),
+          onLongPress: () => _askDeleteMosaic(i, tileContext: tileCtx),
+          child: Container(
+            width: 52,
+            height: 52,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: kPanelHi,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: kClipBorder),
+            ),
+            child: _mosaicArt(m, 38),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 點縮圖：臉＝碼／不碼（同點照片上的臉），其他＝照片上那一塊亮一下
+  void _thumbTap(int i) {
+    if (i < 0 || i >= _mosaics.length) return;
+    if (_mosaics[i].face) _toggleFace(i);
+    _flash({i});
+  }
+
+  /// 一塊馬賽克的小圖（縮圖、長按浮起來那塊共用）：照片上那一塊範圍套上
+  /// 同一個效果，等比塞進 [box]×[box]（筆畫照筆畫的範圍）。
+  /// 點掉的臉畫原圖＋虛線圈（跟照片上一樣）
+  Widget _mosaicArt(PhotoMosaic m, double box) {
+    final img = _mosaicBase;
+    if (img == null) return Icon(Icons.blur_on, size: box * 0.6, color: kIcon);
+    final w = img.width.toDouble(), h = img.height.toDouble();
+    final src = m.isStroke ? _strokeRectPx(m, w, h) : photoMosaicRect(m, w, h);
+    if (src.width <= 0 || src.height <= 0) {
+      return SizedBox(width: box, height: box);
+    }
+    final ar = src.width / src.height;
+    final size = ar >= 1 ? Size(box, box / ar) : Size(box * ar, box);
+    final CustomPainter painter;
+    if (m.off) {
+      painter = _CropPainter(img: img, srcRect: src, oval: m.oval);
+    } else if (m.isStroke) {
+      painter = _MosaicStrokePainter(
+        img: img,
+        style: m.style,
+        strokePts: m.stroke!,
+        brush: m.brush,
+      );
+    } else {
+      painter = _MosaicPatchPainter(
+        img: img,
+        style: m.style,
+        srcRect: src,
+        oval: m.oval,
+      );
+    }
+    Widget art = SizedBox.fromSize(
+      size: size,
+      child: CustomPaint(
+        painter: painter,
+        foregroundPainter: m.off
+            ? MosaicOutlinePainter(
+                oval: m.oval,
+                dashed: true,
+                color: Colors.white,
+                width: 1.2,
+              )
+            : null,
+      ),
+    );
+    // 超出照片的那一截照片上看不到（畫布裁掉了），小圖也切掉，
+    // 不然會多畫一塊黑的
+    final vis = src.intersect(Offset.zero & Size(w, h));
+    if (vis != src && vis.width > 0 && vis.height > 0) {
+      art = ClipRect(
+        clipper: _FracClipper(
+          Rect.fromLTRB(
+            (vis.left - src.left) / src.width,
+            (vis.top - src.top) / src.height,
+            (vis.right - src.left) / src.width,
+            (vis.bottom - src.top) / src.height,
+          ),
+        ),
+        child: art,
+      );
+    }
+    return art;
+  }
+
+  /// 長按一塊（縮圖，或照片上的那一塊——[rect] 是它的螢幕位置）：背景壓暗、
+  /// 那一塊浮起來，旁邊小選單問要不要刪（使用者定的刪除手勢，同草稿夾、範本）
+  Future<void> _askDeleteMosaic(
+    int i, {
+    BuildContext? tileContext,
+    Rect? rect,
+  }) async {
+    if (i < 0 || i >= _mosaics.length || _brushMode) return;
+    final m = _mosaics[i];
+    const actions = [
+      LibraryMenuAction(
+        'delete',
+        '刪除',
+        icon: Icons.delete_outline,
+        destructive: true,
+      ),
+    ];
+    final String? act;
+    if (rect != null) {
+      act = await showTileMenuAt<String>(
+        context,
+        rect: rect,
+        preview: Center(child: _mosaicArt(m, rect.longestSide)),
+        actions: actions,
+        radius: m.oval && !m.isStroke ? rect.shortestSide / 2 : 4,
+      );
+    } else if (tileContext != null) {
+      act = await showLibraryTileMenu<String>(
+        tileContext,
+        preview: ColoredBox(
+          color: kPanelHi,
+          child: Center(child: _mosaicArt(m, 38)),
+        ),
+        actions: actions,
+        radius: 12,
+      );
+    } else {
+      return;
+    }
+    if (act != 'delete' || !mounted) return;
+    // 選單開著的時候清單不會變，保險起見還是照物件找回來
+    final at = _mosaics.indexOf(m);
+    if (at < 0) return;
+    _pushUndo();
+    setState(() {
+      _mosaics.removeAt(at);
+      _selMosaic = -1;
+      _flashIds = const {};
+    });
+  }
+
+  /// 「新增馬賽克」：跟影片剪輯那張馬賽克選單同一個樣子
+  ///（使用者在畫布選的）。自動碼人臉／方框／筆刷
+  Future<void> _askAddMosaic() async {
+    if (_brushMode || _findingFaces) return;
+    Widget item(BuildContext context, IconData icon, String label, String v) =>
+        InkWell(
+          onTap: () => Navigator.pop(context, v),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+            child: Row(
+              children: [
+                Icon(icon, size: 21, color: kAmber),
+                const SizedBox(width: 15),
+                Text(label, style: const TextStyle(fontSize: 14, color: kText)),
+              ],
+            ),
+          ),
+        );
+    final pick = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 4),
+              child: Text(
+                '新增馬賽克',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+            ),
+            item(context, Icons.face_retouching_natural, '自動碼人臉', 'face'),
+            item(context, Icons.crop_square, '方框', 'box'),
+            item(context, Icons.brush_outlined, '筆刷', 'brush'),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    switch (pick) {
+      case 'face':
+        await _findFaces();
+      case 'box':
+        _addMosaic();
+      case 'brush':
+        _startBrush();
+    }
+  }
+
+  /// 進筆刷塗抹：照下面那排選的樣式畫，直接開全螢幕
+  void _startBrush() {
+    setState(() {
+      _brushStyle
+        ..type = _mzStyle.type
+        ..strength = _mzStyle.strength
+        ..feather = _mzStyle.feather
+        ..color = _mzStyle.color;
+      _brushMode = true;
+      _selMosaic = -1;
+      _fsView = true;
+      _fsBrushOpen = true;
+    });
   }
 
   // ===== 馬賽克拖曳（方塊自己的手勢與整面的選取路由共用）=====
@@ -1618,6 +2064,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     if (_pvPts.length >= 2) return;
     _phClearGuides();
     _phUndoPending = true;
+    // 馬賽克模式不選取：照片上沒有框，選了也看不出來，留著的選取還會
+    // 讓下一次在別處拖曳時把它拖走（選取路由）。拖曳本身就作用在這一塊
+    if (_mosaicMode) return;
     setState(() {
       _selMosaic = i;
       _wmPart = WmPart.none;
@@ -2536,18 +2985,23 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   /// 同一點連續點擊往下鑽一層——完全被蓋住的圖層本來永遠選不到
   void _phTapAt(Offset p) {
     FocusManager.instance.primaryFocus?.unfocus();
+    // 兩指捏完放開的那一下不是「點」：捏臉調大小，不該順便把它切成不碼
+    if (_pinchHappened) return;
     final hits = [
       for (final id in _phOrder())
         if (_phHit(id, p)) id,
     ];
-    // 馬賽克模式點到臉（最上面那一層是臉）：切換碼／不碼，不走選取
+    // 馬賽克模式點到一塊：臉＝切換碼／不碼；其他＝亮一下。都不走選取
+    //（照片上不畫框，選了也看不出來；拖曳、兩指捏直接作用在手指底下那塊）
     if (_mosaicMode && hits.isNotEmpty) {
       final top = hits.first;
-      if (top.kind == 0 &&
-          top.index < _mosaics.length &&
-          _mosaics[top.index].face) {
+      if (top.kind == 0 && top.index < _mosaics.length) {
         _phCycleAt = null;
-        _toggleFace(top.index);
+        if (_mosaics[top.index].face) {
+          _toggleFace(top.index);
+        } else {
+          _flash({top.index});
+        }
         return;
       }
     }
@@ -2601,6 +3055,45 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       _phCycleHintLeft--;
       showHint(context, overlapHint(hits.length));
     }
+  }
+
+  /// 長按照片上的一塊（馬賽克模式）：跟長按縮圖一樣，壓暗＋刪除小選單
+  void _phLongPressAt(Offset p) {
+    if (_brushMode || _pinchHappened) return;
+    for (final id in _phOrder()) {
+      if (id.kind != 0 || id.index >= _mosaics.length || !_phHit(id, p)) {
+        continue;
+      }
+      final r = _phBox[id];
+      final box = _canvasKey.currentContext?.findRenderObject();
+      if (r == null || box is! RenderBox || !box.attached) return;
+      unawaited(
+        _askDeleteMosaic(
+          id.index,
+          rect: Rect.fromPoints(
+            box.localToGlobal(r.topLeft),
+            box.localToGlobal(r.bottomRight),
+          ),
+        ),
+      );
+      return;
+    }
+  }
+
+  /// 這幾個螢幕座標（依序試）落在哪一塊馬賽克上（最上面那塊）；都沒有回 -1
+  int _mosaicUnder(List<Offset> globals) {
+    final box = _canvasKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.attached) return -1;
+    final order = _phOrder();
+    for (final g in globals) {
+      final p = box.globalToLocal(g);
+      for (final id in order) {
+        if (id.kind == 0 && id.index < _mosaics.length && _phHit(id, p)) {
+          return id.index;
+        }
+      }
+    }
+    return -1;
   }
 
   // ===== 置中吸附（路由拖曳／馬賽克拖曳共用，跟 WatermarkLayer 同手感）=====
@@ -3173,6 +3666,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       if (stale) _pvSeen.remove(id);
       return stale;
     });
+    // 新的一手（之前沒有手指在上面）：上一手捏過的記號清掉
+    if (_pvPts.isEmpty) _pinchHappened = false;
     _pvSeen[e.pointer] = now;
     _pvPts[e.pointer] = e.position;
     if (_pvPts.length != 2) return;
@@ -3180,12 +3675,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     final d = (p[0] - p[1]).distance;
     if (d <= 20) return;
     _pvBaseDist = d;
+    _pinchHappened = true;
     _pvBaseAngle = math.atan2(p[1].dy - p[0].dy, p[1].dx - p[0].dx);
     _pvBaseText = _settings.text.sizeFrac;
     _pvBaseLogo = _settings.logo.sizeFrac;
     _pvBaseRotText = _settings.text.rotation;
     _pvBaseRotLogo = _settings.logo.rotation;
-    if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
+    if (_mosaicMode) {
+      // 捏的是兩指中間（不在任何一塊上就看兩根手指各自底下）那一塊
+      _pinchMosaic = _mosaicUnder([(p[0] + p[1]) / 2, p[0], p[1]]);
+      if (_pinchMosaic >= 0) {
+        final m = _mosaics[_pinchMosaic];
+        _pvBaseMosaic = m.isStroke ? m.brush : m.scale;
+      }
+    } else if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
       _pvBaseMosaic = _mosaics[_selMosaic].scale;
     }
     if (_selExtra >= 0 && _selExtra < _extraWms.length) {
@@ -3213,6 +3716,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     // 修正量套給每個目標。馬賽克不轉，所以延到真的要轉才算
     double? dRot;
     double rot(double base) => _wrapDeg(base + (dRot ??= _rotSnap.delta(dDeg)));
+    // 馬賽克模式捏在空白處：沒有東西可縮（也沒有浮水印），不拍空的一步
+    if (_mosaicMode && _pinchMosaic < 0) return;
     _phPushUndoIfNeeded(); // 真的縮到東西了才拍
     _pinchApply(f, rot);
     // 每一格只重畫預覽；放手（_pinchUp）才整頁 setState 對回面板讀數
@@ -3221,6 +3726,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   /// 把捏合的縮放倍率 [f] 與旋轉 [rot] 套到目前的目標上
   void _pinchApply(double f, double Function(double base) rot) {
+    // 馬賽克模式：捏哪塊動哪塊（起手時手指底下那塊，臉也可以）；
+    // 筆畫縮放的是粗細（跟大小滑桿同一個意思）
+    if (_mosaicMode) {
+      final i = _pinchMosaic;
+      if (i >= 0 && i < _mosaics.length) {
+        final m = _mosaics[i];
+        if (m.isStroke) {
+          m.brush = (_pvBaseMosaic * f).clamp(0.02, 0.6);
+        } else {
+          m.scale = (_pvBaseMosaic * f).clamp(0.02, 3.0);
+        }
+      }
+      return;
+    }
     // 有選中馬賽克：雙指縮它，不動浮水印（打碼區域不支援旋轉）
     if (_selMosaic >= 0 && _selMosaic < _mosaics.length) {
       // 上限跟樣式表滑桿一致（3.0）：以前夾 1.5，用滑桿放大到
@@ -3310,9 +3829,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                 children: [
                   // 上 4 下 6：面板是主要工作區，太窄的話每次調整都在
                   // 捲動；照片有全螢幕預覽可以看，這裡讓一點沒關係。
-                  // 馬賽克模式反過來：面板只有三排，主角是照片上的臉
+                  // 馬賽克模式反過來：主角是照片上的臉——下半部固定剛好
+                  // 放得下（見 _mzPanelHeight），其餘全給照片
                   Expanded(
-                    flex: _mosaicMode ? 6 : 4,
+                    flex: 4,
                     // 雙指縮放浮水印（用 Listener 不搶單指拖曳手勢）
                     child: Listener(
                       onPointerDown: _pinchDown,
@@ -3352,6 +3872,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                       // 拖曳／捏合／滑桿的每一格只重建這裡
                                       //（_liveRepaint），不整頁 setState
                                       child: RepaintBoundary(
+                                        key: _canvasKey,
                                         child: ValueListenableBuilder<int>(
                                           valueListenable: _liveTick,
                                           builder: (context, _, _) => Stack(
@@ -3475,6 +3996,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                                             _phTapAt(
                                                               d.localPosition,
                                                             ),
+                                                        // 馬賽克模式：長按一塊＝
+                                                        // 壓暗＋刪除小選單
+                                                        onLongPressStart:
+                                                            _mosaicMode
+                                                            ? (
+                                                                d,
+                                                              ) => _phLongPressAt(
+                                                                d.localPosition,
+                                                              )
+                                                            : null,
                                                         child:
                                                             const SizedBox.expand(),
                                                       ),
@@ -3533,11 +4064,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                                               // 筆刷模式不掛：塗抹層在最上面整面接管，
                                               // 而且每畫一筆 _selMosaic 就換一次，這層
                                               // 跟著增減會把塗抹層的索引往後推、手勢
-                                              // 被重建（同上面輔助線那個坑）
+                                              // 被重建（同上面輔助線那個坑）。
+                                              // 馬賽克模式不掛：那裡沒有浮水印擋在
+                                              // 上面，也不留選取（見 _mosaicDragStart）
                                               if (_selMosaic >= 0 &&
                                                   _selMosaic <
                                                       _mosaics.length &&
-                                                  !_brushMode)
+                                                  !_brushMode &&
+                                                  !_mosaicMode)
                                                 Positioned.fill(
                                                   key: const ValueKey(
                                                     'mosaic-route',
@@ -3707,9 +4241,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                   // 馬賽克模式沒有區段（只有一張面板）
                   if (!_mosaicMode)
                     IgnorePointer(ignoring: _brushMode, child: _sectionBar()),
-                  Expanded(
-                    flex: _mosaicMode ? 4 : 6,
-                    child: Stack(
+                  _panelArea(
+                    Stack(
                       // 撐滿，不照子件量尺寸：這裡的子件全是定位過的
                       //（面板 Positioned.fill、浮鍵 Positioned），要是哪天
                       // 混進一個沒定位的小東西，loose 的 Stack 會縮成它的
@@ -3907,4 +4440,208 @@ class _MosaicPatchPainter extends CustomPainter {
       old.type != type ||
       old.strength != strength ||
       old.feather != feather;
+}
+
+/// 只留 [frac]（0~1，對自己的寬高）那一塊：小圖切掉照片外面那截
+class _FracClipper extends CustomClipper<Rect> {
+  final Rect frac;
+
+  const _FracClipper(this.frac);
+
+  @override
+  Rect getClip(Size size) => Rect.fromLTRB(
+    frac.left * size.width,
+    frac.top * size.height,
+    frac.right * size.width,
+    frac.bottom * size.height,
+  );
+
+  @override
+  bool shouldReclip(_FracClipper oldClipper) => oldClipper.frac != frac;
+}
+
+/// 點掉的臉的縮圖：照片原本那一塊（不碼），橢圓就裁成橢圓
+class _CropPainter extends CustomPainter {
+  final ui.Image img;
+  final Rect srcRect;
+  final bool oval;
+
+  const _CropPainter({
+    required this.img,
+    required this.srcRect,
+    required this.oval,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final dst = Offset.zero & size;
+    if (oval) {
+      canvas.save();
+      canvas.clipPath(Path()..addOval(dst));
+    }
+    canvas.drawImageRect(
+      img,
+      srcRect,
+      dst,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+    if (oval) canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_CropPainter old) =>
+      old.img != img || old.srcRect != srcRect || old.oval != oval;
+}
+
+/// 「亮一下」：一圈白光從亮到沒（0.8 秒）。照片上的馬賽克不畫框，
+/// 剛加的、點到的靠這個認出是哪一塊。外面要多留 [pad] 給光暈擴散
+class _FlashGlow extends StatelessWidget {
+  static const double pad = 14;
+  final bool oval;
+
+  const _FlashGlow({super.key, required this.oval});
+
+  @override
+  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
+    tween: Tween(begin: 1, end: 0),
+    duration: const Duration(milliseconds: 800),
+    curve: Curves.easeIn,
+    builder: (context, v, _) => v <= 0.01
+        ? const SizedBox.shrink()
+        : CustomPaint(
+            painter: _GlowPainter(v: v, oval: oval),
+          ),
+  );
+}
+
+class _GlowPainter extends CustomPainter {
+  final double v;
+  final bool oval;
+
+  const _GlowPainter({required this.v, required this.oval});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = (Offset.zero & size).deflate(_FlashGlow.pad);
+    final path = oval ? (Path()..addOval(r)) : (Path()..addRect(r));
+    canvas
+      ..drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 7
+          ..color = Colors.white.withValues(alpha: 0.55 * v)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+      )
+      ..drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5
+          ..color = Colors.white.withValues(alpha: 0.7 * v),
+      );
+  }
+
+  @override
+  bool shouldRepaint(_GlowPainter old) => old.v != v || old.oval != oval;
+}
+
+/// 效果磚上的小樣本：像素化＝一小格臉的色塊、模糊＝暈開的一團、
+/// 純色＝現在選的那個顏色
+class _MzSwatch extends StatelessWidget {
+  final int type;
+  final int color;
+
+  const _MzSwatch(this.type, {this.color = 0xFF000000});
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 28,
+    height: 28,
+    child: switch (type) {
+      0 => ClipRRect(
+        borderRadius: BorderRadius.circular(7),
+        child: const CustomPaint(painter: _PixelSwatchPainter()),
+      ),
+      1 => DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(7),
+          gradient: const RadialGradient(
+            center: Alignment(0, -0.16),
+            radius: 0.75,
+            colors: [
+              Color(0xFFE8C3A7),
+              Color(0xFFD2A88F),
+              Color(0xFF7D6E86),
+              Color(0xFF8E95B8),
+            ],
+            stops: [0, 0.26, 0.58, 1],
+          ),
+        ),
+      ),
+      _ => DecoratedBox(
+        decoration: BoxDecoration(
+          color: Color(color),
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(color: const Color(0xFF3A3A42)),
+        ),
+      ),
+    },
+  );
+}
+
+class _PixelSwatchPainter extends CustomPainter {
+  const _PixelSwatchPainter();
+
+  // 4×4：頭髮、膚色、衣服——一眼看得出是「把臉碼成格子」
+  static const _cells = [
+    0xFF2A211E, 0xFF3A2C27, 0xFF3A2C27, 0xFF2A211E, //
+    0xFF3A2C27, 0xFFD8B096, 0xFFE2BBA0, 0xFF3A2C27, //
+    0xFF5B4740, 0xFFE8C3A7, 0xFFDDB59A, 0xFF4A3A35, //
+    0xFF9E8CC0, 0xFFC9A592, 0xFFC29F8D, 0xFFA895C8, //
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cw = size.width / 4, ch = size.height / 4;
+    for (var i = 0; i < _cells.length; i++) {
+      canvas.drawRect(
+        Rect.fromLTWH((i % 4) * cw, (i ~/ 4) * ch, cw + 0.5, ch + 0.5),
+        Paint()..color = Color(_cells[i]),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_PixelSwatchPainter old) => false;
+}
+
+/// 縮圖那排最後的「新增」格：虛線圓角框
+class _DashedTilePainter extends CustomPainter {
+  const _DashedTilePainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = RRect.fromRectAndRadius(
+      (Offset.zero & size).deflate(0.75),
+      const Radius.circular(12),
+    );
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = const Color(0xFF6A6A74);
+    for (final metric in (Path()..addRRect(r)).computeMetrics()) {
+      var d = 0.0;
+      while (d < metric.length) {
+        canvas.drawPath(
+          metric.extractPath(d, math.min(d + 5, metric.length)),
+          paint,
+        );
+        d += 9;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedTilePainter old) => false;
 }

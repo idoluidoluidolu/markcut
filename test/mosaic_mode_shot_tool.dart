@@ -129,6 +129,71 @@ Future<Uint8List> _scene() async {
   return d!.buffer.asUint8List();
 }
 
+/// 直式照片（手機直拍那種）：一個人站中間，頭的中心與半徑
+const _pw = 900.0, _ph = 1600.0;
+const _pHead = (x: 450.0, y: 560.0, r: 170.0);
+
+Future<Uint8List> _scenePortrait() async {
+  final rec = ui.PictureRecorder();
+  final c = ui.Canvas(rec);
+  c.drawRect(
+    const Rect.fromLTWH(0, 0, _pw, _ph * 0.45),
+    Paint()..color = const Color(0xFF7F88B0),
+  );
+  c.drawRect(
+    const Rect.fromLTWH(0, _ph * 0.45, _pw, _ph * 0.55),
+    Paint()..color = const Color(0xFFDCE4EE),
+  );
+  const p = _pHead;
+  c.drawRRect(
+    RRect.fromRectAndCorners(
+      Rect.fromLTWH(p.x - 1.8 * p.r, p.y + 0.9 * p.r, 3.6 * p.r, _ph),
+      topLeft: const Radius.circular(170),
+      topRight: const Radius.circular(170),
+    ),
+    Paint()..color = const Color(0xFFB9A6D6),
+  );
+  c.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromLTWH(p.x - 1.15 * p.r, p.y - 1.15 * p.r, 2.3 * p.r, 2.9 * p.r),
+      Radius.circular(p.r),
+    ),
+    Paint()..color = const Color(0xFF2A211E),
+  );
+  c.drawOval(
+    Rect.fromCenter(
+      center: Offset(p.x, p.y),
+      width: 1.7 * p.r,
+      height: 2.1 * p.r,
+    ),
+    Paint()..color = const Color(0xFFE8C3A7),
+  );
+  for (final dx in const [-0.36, 0.36]) {
+    c.drawCircle(
+      Offset(p.x + dx * p.r, p.y - 0.05 * p.r),
+      p.r * 0.08,
+      Paint()..color = const Color(0xFF2A211C),
+    );
+  }
+  // 包包上的標誌（「新增馬賽克 → 方框」要蓋的那種東西）
+  c.drawRRect(
+    RRect.fromRectAndRadius(
+      const Rect.fromLTWH(560, 1180, 220, 180),
+      const Radius.circular(36),
+    ),
+    Paint()..color = const Color(0xFFC7CCD6),
+  );
+  c.drawCircle(
+    const Offset(670, 1270),
+    34,
+    Paint()..color = const Color(0xFF7E8596),
+  );
+  final img = await rec.endRecording().toImage(_pw.toInt(), _ph.toInt());
+  final d = await img.toByteData(format: ui.ImageByteFormat.png);
+  img.dispose();
+  return d!.buffer.asUint8List();
+}
+
 void main() {
   final out = Platform.environment['MARKCUT_SHOT_OUT'];
   if (out == null || out.isEmpty) {
@@ -256,9 +321,98 @@ void main() {
     await settle(t, 6);
     await snap(t, 'mz_photo_off.png');
 
+    // 10-25 改版：新增馬賽克 → 選單 → 方框（放在空的地方、亮一下）
+    await t.tap(find.text('新增馬賽克').last);
+    await settle(t, 8);
+    await snap(t, 'mz_add_sheet.png');
+    await t.tap(find.text('方框'));
+    // 選單收起來、光暈還在亮的那一刻
+    for (var i = 0; i < 6; i++) {
+      await t.pump(const Duration(milliseconds: 40));
+    }
+    await t.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await snap(t, 'mz_add_box_flash.png');
+    await settle(t, 20);
+    await snap(t, 'mz_add_box.png');
+
+    // 大小：往右拉（全部一起變大）
+    final size = find.descendant(
+      of: find.ancestor(of: find.text('大小'), matching: find.byType(Row)).first,
+      matching: find.byType(Slider),
+    );
+    await t.drag(size, const Offset(70, 0));
+    await settle(t, 6);
+    await snap(t, 'mz_size.png');
+
+    // 長按剛加的那塊：壓暗＋刪除小選單
+    final ms = t
+        .widget<WatermarkLayer>(find.byType(WatermarkLayer).first)
+        .settings
+        .mosaics;
+    final box = ms.last;
+    final gesture = await t.startGesture(
+      Offset(
+        canvas.left + box.x * canvas.width,
+        canvas.top + box.y * canvas.height,
+      ),
+    );
+    await t.pump(const Duration(milliseconds: 700));
+    await settle(t, 6);
+    await snap(t, 'mz_longpress.png');
+    await gesture.up();
+    await settle(t, 4);
+    await t.tap(find.text('取消'));
+    await settle(t, 6);
+
     await t.tap(find.text('模糊'));
     await settle(t, 6);
     await snap(t, 'mz_photo_blur.png');
+    await t.pump(const Duration(seconds: 4));
+  });
+
+  testWidgets('直式照片：一個人 → mz_portrait.png', (t) async {
+    SharedPreferences.setMockInitialValues({});
+    phone(t);
+    final path = '$out${Platform.pathSeparator}mz_scene_portrait.png';
+    await t.runAsync(() async {
+      File(path).writeAsBytesSync(await _scenePortrait());
+    });
+    const ch = MethodChannel('markcut/face');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(ch, (_) async {
+      const p = _pHead;
+      return [
+        {
+          'x': (p.x - 0.8 * p.r) / _pw,
+          'y': (p.y - 0.75 * p.r) / _ph,
+          'w': 1.6 * p.r / _pw,
+          'h': 1.6 * p.r / _ph,
+        },
+      ];
+    });
+    await t.pumpWidget(
+      RepaintBoundary(
+        key: _shotKey,
+        child: MaterialApp(
+          theme: buildStudioTheme(),
+          debugShowCheckedModeBanner: false,
+          home: PhotoEditorScreen(
+            photo: XFile(path, name: 'mz_scene_portrait.png'),
+            mosaicMode: true,
+          ),
+        ),
+      ),
+    );
+    await settle(t, 25);
+    await snap(t, 'mz_portrait.png');
+    await t.tap(find.text('新增馬賽克').last);
+    await settle(t, 8);
+    await t.tap(find.text('方框'));
+    await settle(t, 20);
+    await snap(t, 'mz_portrait_box.png');
     await t.pump(const Duration(seconds: 4));
   });
 }

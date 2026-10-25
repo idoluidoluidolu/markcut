@@ -10,6 +10,11 @@
 //      沒有範本、浮水印區段、存成範本
 //   5. 找不到（通道回 null）不炸、不加東西
 //   6. 草稿從馬賽克模式存的：開回馬賽克模式、不再自動找一次
+//   7. 10-25 改版（畫布甲＋新增一＋縮圖二＋大小甲）：照片上不畫框（點掉的臉
+//      才有虛線）；「新增馬賽克」跳選單、方框放在空的地方（連加兩塊不疊）；
+//      大小＝每一塊一起放大縮小；縮圖一塊一格、點臉的縮圖切換、長按刪除；
+//      長按照片上的一塊也能刪；兩指捏臉只動那張臉、不會順便切成不碼；
+//      拖完一塊不會留下隱形的選取
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -25,7 +30,10 @@ import 'package:markcut/models/mosaic.dart';
 import 'package:markcut/models/watermark_settings.dart';
 import 'package:markcut/screens/photo_editor_screen.dart';
 import 'package:markcut/services/face_detect.dart';
+import 'package:markcut/services/mosaic_patch_painter.dart'
+    show photoMosaicRect;
 import 'package:markcut/services/watermark_renderer.dart';
+import 'package:markcut/widgets/mosaic_outline.dart';
 import 'package:markcut/widgets/watermark_layer.dart';
 
 const _face = MethodChannel('markcut/face');
@@ -64,6 +72,40 @@ Offset _at(WidgetTester t, PhotoMosaic m) {
   final r = _canvas(t);
   return Offset(r.left + m.x * r.width, r.top + m.y * r.height);
 }
+
+/// 照片上畫出來的框線（MosaicOutlinePainter）：縮圖那排不算
+Iterable<MosaicOutlinePainter> _outlines(WidgetTester t) {
+  final canvas = _canvas(t);
+  return t
+      .widgetList<CustomPaint>(find.byType(CustomPaint))
+      .where((w) {
+        final p = w.painter ?? w.foregroundPainter;
+        if (p is! MosaicOutlinePainter) return false;
+        // 縮圖在面板裡（畫布外面）；照片上的才算
+        final box = t.getRect(find.byWidget(w));
+        return canvas.overlaps(box);
+      })
+      .map((w) => (w.painter ?? w.foregroundPainter)! as MosaicOutlinePainter);
+}
+
+/// 按「新增馬賽克」→ 選單裡的某一項
+Future<void> _add(WidgetTester t, String item) async {
+  await t.tap(find.text('新增馬賽克').last);
+  await _settle(t, 6);
+  await t.tap(find.text(item));
+  await _settle(t, 6);
+}
+
+/// 「大小」那條滑桿
+Finder _sizeSlider() => find.descendant(
+  of: find.ancestor(of: find.text('大小'), matching: find.byType(Row)).first,
+  matching: find.byType(Slider),
+);
+
+/// 縮圖那排（Semantics 標籤：臉／沒碼的臉／方框／筆刷）
+Finder _thumb(String label) => find.byWidgetPredicate(
+  (w) => w is Semantics && w.properties.label == label,
+);
 
 late Directory _dir;
 late String _photoPath;
@@ -225,12 +267,33 @@ void main() {
       final ms = _live(t).mosaics;
       expect(ms.length, 2);
       expect(ms.every((m) => m.face && m.oval && !m.off), isTrue);
-      for (final x in const ['像素化', '模糊', '純色', '找臉', '方框', '筆刷', '匯出']) {
+      for (final x in const [
+        '像素化',
+        '模糊',
+        '純色',
+        '圓形',
+        '方形',
+        '大小',
+        '濃度',
+        '新增馬賽克',
+        '匯出',
+      ]) {
         expect(find.text(x), findsWidgets, reason: '少了「$x」');
       }
-      for (final x in const ['存成範本', '範本', '位置', '調色', '@我的浮水印']) {
+      for (final x in const [
+        '存成範本',
+        '範本',
+        '位置',
+        '調色',
+        '@我的浮水印',
+        // 舊的三顆工具（找臉／方框／筆刷）收進「新增馬賽克」的選單
+        '找臉',
+        '方框',
+        '筆刷',
+      ]) {
         expect(find.text(x), findsNothing, reason: '馬賽克模式不該有「$x」');
       }
+      expect(_thumb('臉'), findsNWidgets(2), reason: '縮圖要一塊一格');
       expect(t.takeException(), isNull);
     });
 
@@ -261,8 +324,7 @@ void main() {
       await _settle(t, 4);
       expect(_live(t).mosaics.every((m) => m.style.type == 2), isTrue);
 
-      await t.tap(find.text('方框'));
-      await _settle(t, 4);
+      await _add(t, '方框');
       final ms = _live(t).mosaics;
       expect(ms.length, 3);
       expect(ms.last.face, isFalse);
@@ -270,7 +332,7 @@ void main() {
       expect(ms.last.style.type, 2, reason: '方框要照目前選的樣式');
 
       // 形狀切成方的：每一塊都跟著變
-      await t.tap(find.byIcon(Icons.crop_square).first);
+      await t.tap(find.text('方形'));
       await _settle(t, 4);
       expect(_live(t).mosaics.every((m) => !m.oval), isTrue);
       expect(t.takeException(), isNull);
@@ -289,8 +351,7 @@ void main() {
     testWidgets('同一張臉再找一次不重複加', (t) async {
       await _open(t);
       expect(_live(t).mosaics.length, 2);
-      await t.tap(find.text('找臉'));
-      await _settle(t, 6);
+      await _add(t, '自動碼人臉');
       expect(_faceCalls, 2);
       expect(_live(t).mosaics.length, 2, reason: '已經碼著的臉又加了一次');
       expect(find.text('找到的臉都已經碼上了'), findsOneWidget);
@@ -314,9 +375,198 @@ void main() {
       });
       await _open(t, draft: draft);
       expect(_faceCalls, 0, reason: '草稿已經找過臉了');
-      expect(find.text('找臉'), findsOneWidget, reason: '沒有開回馬賽克模式');
+      expect(find.text('新增馬賽克'), findsOneWidget, reason: '沒有開回馬賽克模式');
       expect(find.text('存成範本'), findsNothing);
       expect(_live(t).mosaics.single.face, isTrue);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('照片上不畫框：碼著的臉、剛加的方框都沒有；點掉的臉才有虛線', (t) async {
+      await _open(t);
+      expect(_outlines(t), isEmpty, reason: '碼著的臉不該有框（使用者：馬賽克不要有邊框）');
+
+      await _add(t, '方框');
+      expect(_outlines(t), isEmpty, reason: '剛加的方框也不該有框');
+      // 琥珀選取框（方形版是 Container 的邊框）也不能有
+      expect(
+        find.byWidgetPredicate(
+          (w) =>
+              w is Container &&
+              w.decoration is BoxDecoration &&
+              (w.decoration! as BoxDecoration).border ==
+                  Border.all(color: const Color(0xFFFFC24B), width: 1.4),
+        ),
+        findsNothing,
+      );
+
+      await t.tapAt(_at(t, _live(t).mosaics.first));
+      await _settle(t, 4);
+      final lines = _outlines(t).toList();
+      expect(lines.length, 1, reason: '點掉的臉要留一圈虛線（找得回來）');
+      expect(lines.single.dashed, isTrue);
+      // 亮一下的光暈要收得掉（計時器走完，測試才收得乾淨）
+      await t.pump(const Duration(seconds: 1));
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('新增方框：放在空的地方，連加兩塊不會疊在一起', (t) async {
+      await _open(t);
+      await _add(t, '方框');
+      await _add(t, '方框');
+      final ms = _live(t).mosaics;
+      expect(ms.length, 4);
+      const w = 1000.0, h = 800.0;
+      Rect r(PhotoMosaic m) => photoMosaicRect(m, w, h);
+      double cover(Rect a, Rect b) {
+        final o = a.intersect(b);
+        if (o.width <= 0 || o.height <= 0) return 0;
+        return o.width * o.height / (a.width * a.height);
+      }
+
+      final a = ms[2], b = ms[3];
+      expect(
+        (a.x - b.x).abs() + (a.y - b.y).abs(),
+        greaterThan(0.1),
+        reason: '第二塊疊在第一塊上（以前一律放正中央）',
+      );
+      expect(cover(r(b), r(a)), lessThan(0.5));
+      for (final f in ms.take(2)) {
+        expect(cover(r(a), r(f)), lessThan(0.2), reason: '新的一塊蓋到臉上了');
+      }
+      await t.pump(const Duration(seconds: 1));
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('大小：每一塊一起放大縮小；上一步退得回來', (t) async {
+      await _open(t);
+      await _add(t, '方框');
+      final ms = _live(t).mosaics;
+      final before = [for (final m in ms) m.scale];
+      await t.drag(_sizeSlider(), const Offset(160, 0));
+      await _settle(t, 4);
+      final after = [for (final m in _live(t).mosaics) m.scale];
+      final f = after[0] / before[0];
+      expect(f, greaterThan(1.1), reason: '往右拉要變大');
+      for (var i = 0; i < before.length; i++) {
+        expect(
+          after[i] / before[i],
+          closeTo(f, 1e-6),
+          reason: '第 ${i + 1} 塊沒有跟著一起變',
+        );
+      }
+      await t.tap(find.byIcon(Icons.undo));
+      await _settle(t, 4);
+      final back = [for (final m in _live(t).mosaics) m.scale];
+      for (var i = 0; i < before.length; i++) {
+        expect(back[i], closeTo(before[i], 1e-9), reason: '上一步沒有退回來');
+      }
+      await t.pump(const Duration(seconds: 1));
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('縮圖：點臉的縮圖＝碼↔不碼；長按縮圖→刪除', (t) async {
+      await _open(t);
+      await t.tap(_thumb('臉').first);
+      await _settle(t, 4);
+      expect(_live(t).mosaics.first.off, isTrue, reason: '點臉的縮圖要切成不碼');
+      expect(_thumb('沒碼的臉'), findsOneWidget);
+
+      await t.longPress(_thumb('臉').first);
+      await _settle(t, 6);
+      expect(find.text('刪除'), findsOneWidget, reason: '長按要跳刪除小選單');
+      await t.tap(find.text('刪除'));
+      await _settle(t, 6);
+      expect(_live(t).mosaics.length, 1);
+      expect(_live(t).mosaics.single.off, isTrue, reason: '刪錯塊了');
+      await t.pump(const Duration(seconds: 1));
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('長按照片上的一塊：壓暗＋刪除；取消就不刪', (t) async {
+      await _open(t);
+      final second = _live(t).mosaics[1];
+      await t.longPressAt(_at(t, second));
+      await _settle(t, 6);
+      expect(find.text('刪除'), findsOneWidget);
+      await t.tap(find.text('取消'));
+      await _settle(t, 6);
+      expect(_live(t).mosaics.length, 2, reason: '按取消卻刪掉了');
+
+      await t.longPressAt(_at(t, second));
+      await _settle(t, 6);
+      await t.tap(find.text('刪除'));
+      await _settle(t, 6);
+      expect(_live(t).mosaics.length, 1);
+      expect(_live(t).mosaics.contains(second), isFalse, reason: '刪錯塊了');
+      expect(_live(t).mosaics.single.off, isFalse, reason: '長按不該順便切成不碼');
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('兩指捏臉：只有那張臉變大，不會順便切成不碼', (t) async {
+      await _open(t);
+      final ms = _live(t).mosaics;
+      final a = ms[0], b = ms[1];
+      final a0 = a.scale, b0 = b.scale;
+      final c = _at(t, a);
+      final g1 = await t.startGesture(c - const Offset(15, 0), pointer: 7);
+      await t.pump();
+      final g2 = await t.startGesture(c + const Offset(15, 0), pointer: 8);
+      await t.pump();
+      for (var i = 1; i <= 6; i++) {
+        await g1.moveTo(c - Offset(15.0 + i * 6, 0));
+        await g2.moveTo(c + Offset(15.0 + i * 6, 0));
+        await t.pump(const Duration(milliseconds: 16));
+      }
+      await g1.up();
+      await g2.up();
+      await _settle(t, 4);
+      expect(a.scale, greaterThan(a0 * 1.5), reason: '捏的那張臉要變大');
+      expect(b.scale, closeTo(b0, 1e-9), reason: '另一張臉不該跟著變');
+      expect(a.off, isFalse, reason: '捏完放開那一下被當成「點」，臉被切成不碼');
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('小螢幕＋大字：面板不爆版（iPhone SE、字級 2.0）', (t) async {
+      t.platformDispatcher.textScaleFactorTestValue = 2.0;
+      addTearDown(t.platformDispatcher.clearTextScaleFactorTestValue);
+      t.view.physicalSize = const Size(640, 1136);
+      t.view.devicePixelRatio = 2.0;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(
+        MaterialApp(
+          home: PhotoEditorScreen(
+            photo: XFile(_photoPath, name: 'p.png', mimeType: 'image/png'),
+            mosaicMode: true,
+          ),
+        ),
+      );
+      await _settle(t, 14);
+      expect(_live(t).mosaics.length, 2);
+      expect(find.text('新增馬賽克'), findsOneWidget);
+      await _add(t, '方框');
+      await t.pump(const Duration(seconds: 1));
+      expect(t.takeException(), isNull, reason: '小螢幕大字爆版了');
+    });
+
+    testWidgets('拖完一塊方框，再在別處拖不會拖到它（沒有隱形的選取）', (t) async {
+      await _open(t);
+      await _add(t, '方框');
+      await t.pump(const Duration(seconds: 1));
+      final box = _live(t).mosaics.last;
+      final x0 = box.x;
+      await t.dragFrom(_at(t, box), const Offset(60, 0));
+      await _settle(t, 4);
+      final x1 = box.x;
+      expect(x1, greaterThan(x0 + 0.03), reason: '方框拖不動');
+
+      // 畫布左下角（離臉跟方框都遠）拖一下：方框不該跟著動
+      final canvas = _canvas(t);
+      await t.dragFrom(
+        Offset(canvas.left + 12, canvas.bottom - 12),
+        const Offset(60, 0),
+      );
+      await _settle(t, 4);
+      expect(box.x, closeTo(x1, 1e-9), reason: '在別處拖曳卻拖走了剛剛那塊');
       expect(t.takeException(), isNull);
     });
   });
