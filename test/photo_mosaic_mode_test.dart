@@ -267,17 +267,7 @@ void main() {
       final ms = _live(t).mosaics;
       expect(ms.length, 2);
       expect(ms.every((m) => m.face && m.oval && !m.off), isTrue);
-      for (final x in const [
-        '像素化',
-        '模糊',
-        '純色',
-        '圓形',
-        '方形',
-        '大小',
-        '濃度',
-        '新增馬賽克',
-        '匯出',
-      ]) {
+      for (final x in const ['像素化', '模糊', '純色', '大小', '濃度', '新增馬賽克', '匯出']) {
         expect(find.text(x), findsWidgets, reason: '少了「$x」');
       }
       for (final x in const [
@@ -294,6 +284,17 @@ void main() {
         expect(find.text(x), findsNothing, reason: '馬賽克模式不該有「$x」');
       }
       expect(_thumb('臉'), findsNWidgets(2), reason: '縮圖要一塊一格');
+      // 形狀是另一顆兩段切換鈕（只有圖示），不跟效果磚排成同一排選項
+      expect(_thumb('圓形'), findsOneWidget);
+      expect(_thumb('方形'), findsOneWidget);
+      // 效果磚是白色單色圖示（同 App 其他地方），不是彩色小樣本
+      for (final i in const [
+        Icons.grid_on,
+        Icons.blur_on,
+        Icons.format_color_fill,
+      ]) {
+        expect(find.byIcon(i), findsOneWidget);
+      }
       expect(t.takeException(), isNull);
     });
 
@@ -332,7 +333,7 @@ void main() {
       expect(ms.last.style.type, 2, reason: '方框要照目前選的樣式');
 
       // 形狀切成方的：每一塊都跟著變
-      await t.tap(find.text('方形'));
+      await t.tap(_thumb('方形'));
       await _settle(t, 4);
       expect(_live(t).mosaics.every((m) => !m.oval), isTrue);
       expect(t.takeException(), isNull);

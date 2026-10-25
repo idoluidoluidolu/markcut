@@ -1558,9 +1558,7 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       required String label,
       required Widget art,
       required VoidCallback onTap,
-      int flex = 68,
     }) => Expanded(
-      flex: flex,
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: on ? null : onTap,
@@ -1614,8 +1612,37 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       });
     }
 
-    Widget shapeIcon(IconData icon, bool on) =>
-        Icon(icon, size: 22, color: on ? kText : kTextDim);
+    // 效果磚的圖示跟 App 其他地方同一套：白色單色的 Material 圖示
+    //（以前畫成彩色的小樣本，使用者說不符合整體風格）。純色用油漆桶，
+    // 實心方塊會跟旁邊的「方形」長得太像
+    Widget effIcon(IconData icon, bool on) =>
+        Icon(icon, size: 24, color: on ? kText : kIcon);
+
+    // 形狀是另一組設定（不是第四種效果）：做成一顆兩段的切換鈕，長得跟左邊
+    // 的效果磚不一樣、中間空開（使用者：圓形方形要跟前面有區隔，不然像同一排選項）
+    Widget shapeSeg(bool oval) {
+      final on = _mzOval == oval;
+      return Semantics(
+        button: true,
+        selected: on,
+        label: oval ? '圓形' : '方形',
+        excludeSemantics: true,
+        child: InkWell(
+          onTap: on ? null : () => setOval(oval),
+          child: Container(
+            width: 46,
+            height: 40,
+            alignment: Alignment.center,
+            color: on ? kPanelHi : Colors.transparent,
+            child: Icon(
+              oval ? Icons.circle_outlined : Icons.crop_square,
+              size: 20,
+              color: on ? kText : kTextDim,
+            ),
+          ),
+        ),
+      );
+    }
 
     return SingleChildScrollView(
       // 底下讓出浮動鈕列（字級放大塞不下時捲得到最後一排）
@@ -1625,55 +1652,55 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
         children: [
           _mosaicStrip(),
           const SizedBox(height: 14),
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                tile(
-                  on: _mzStyle.type == 0,
-                  label: '像素化',
-                  art: const _MzSwatch(0),
-                  onTap: () => setType(0),
-                ),
-                const SizedBox(width: 8),
-                tile(
-                  on: _mzStyle.type == 1,
-                  label: '模糊',
-                  art: const _MzSwatch(1),
-                  onTap: () => setType(1),
-                ),
-                const SizedBox(width: 8),
-                tile(
-                  on: _mzStyle.type == 2,
-                  label: '純色',
-                  art: _MzSwatch(2, color: _mzStyle.color),
-                  onTap: () => setType(2),
-                ),
-                Container(
-                  width: 1,
-                  margin: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 12,
+          Row(
+            children: [
+              Expanded(
+                child: IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      tile(
+                        on: _mzStyle.type == 0,
+                        label: '像素化',
+                        art: effIcon(Icons.grid_on, _mzStyle.type == 0),
+                        onTap: () => setType(0),
+                      ),
+                      const SizedBox(width: 8),
+                      tile(
+                        on: _mzStyle.type == 1,
+                        label: '模糊',
+                        art: effIcon(Icons.blur_on, _mzStyle.type == 1),
+                        onTap: () => setType(1),
+                      ),
+                      const SizedBox(width: 8),
+                      tile(
+                        on: _mzStyle.type == 2,
+                        label: '純色',
+                        art: effIcon(
+                          Icons.format_color_fill,
+                          _mzStyle.type == 2,
+                        ),
+                        onTap: () => setType(2),
+                      ),
+                    ],
                   ),
-                  color: kClipBorder,
                 ),
-                tile(
-                  on: _mzOval,
-                  label: '圓形',
-                  flex: 54,
-                  art: shapeIcon(Icons.circle_outlined, _mzOval),
-                  onTap: () => setOval(true),
+              ),
+              const SizedBox(width: 18),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  border: Border.all(color: kClipBorder),
+                  borderRadius: BorderRadius.circular(999),
                 ),
-                const SizedBox(width: 8),
-                tile(
-                  on: !_mzOval,
-                  label: '方形',
-                  flex: 54,
-                  art: shapeIcon(Icons.crop_square, !_mzOval),
-                  onTap: () => setOval(false),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [shapeSeg(true), shapeSeg(false)],
+                  ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
           const SizedBox(height: 10),
           // 滑桿拖動中只重畫預覽（_liveRepaint），不整頁 setState；這兩條
@@ -4544,76 +4571,6 @@ class _GlowPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GlowPainter old) => old.v != v || old.oval != oval;
-}
-
-/// 效果磚上的小樣本：像素化＝一小格臉的色塊、模糊＝暈開的一團、
-/// 純色＝現在選的那個顏色
-class _MzSwatch extends StatelessWidget {
-  final int type;
-  final int color;
-
-  const _MzSwatch(this.type, {this.color = 0xFF000000});
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    width: 28,
-    height: 28,
-    child: switch (type) {
-      0 => ClipRRect(
-        borderRadius: BorderRadius.circular(7),
-        child: const CustomPaint(painter: _PixelSwatchPainter()),
-      ),
-      1 => DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(7),
-          gradient: const RadialGradient(
-            center: Alignment(0, -0.16),
-            radius: 0.75,
-            colors: [
-              Color(0xFFE8C3A7),
-              Color(0xFFD2A88F),
-              Color(0xFF7D6E86),
-              Color(0xFF8E95B8),
-            ],
-            stops: [0, 0.26, 0.58, 1],
-          ),
-        ),
-      ),
-      _ => DecoratedBox(
-        decoration: BoxDecoration(
-          color: Color(color),
-          borderRadius: BorderRadius.circular(7),
-          border: Border.all(color: const Color(0xFF3A3A42)),
-        ),
-      ),
-    },
-  );
-}
-
-class _PixelSwatchPainter extends CustomPainter {
-  const _PixelSwatchPainter();
-
-  // 4×4：頭髮、膚色、衣服——一眼看得出是「把臉碼成格子」
-  static const _cells = [
-    0xFF2A211E, 0xFF3A2C27, 0xFF3A2C27, 0xFF2A211E, //
-    0xFF3A2C27, 0xFFD8B096, 0xFFE2BBA0, 0xFF3A2C27, //
-    0xFF5B4740, 0xFFE8C3A7, 0xFFDDB59A, 0xFF4A3A35, //
-    0xFF9E8CC0, 0xFFC9A592, 0xFFC29F8D, 0xFFA895C8, //
-  ];
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cw = size.width / 4, ch = size.height / 4;
-    for (var i = 0; i < _cells.length; i++) {
-      canvas.drawRect(
-        Rect.fromLTWH((i % 4) * cw, (i ~/ 4) * ch, cw + 0.5, ch + 0.5),
-        Paint()..color = Color(_cells[i]),
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_PixelSwatchPainter old) => false;
 }
 
 /// 縮圖那排最後的「新增」格：虛線圓角框
