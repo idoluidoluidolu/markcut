@@ -339,6 +339,46 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
+    testWidgets('模糊才有柔邊：調了每一塊都變；換回像素化不柔、再換回模糊記得', (t) async {
+      await _open(t);
+      expect(find.text('柔邊'), findsNothing, reason: '像素化不該有柔邊');
+      await t.tap(find.text('模糊'));
+      await _settle(t, 6);
+      expect(find.text('柔邊'), findsOneWidget, reason: '模糊要有柔邊（使用者問的）');
+      final slider = find.descendant(
+        of: find
+            .ancestor(of: find.text('柔邊'), matching: find.byType(Row))
+            .first,
+        matching: find.byType(Slider),
+      );
+      await t.drag(slider, const Offset(80, 0));
+      await _settle(t, 4);
+      final f = _live(t).mosaics.first.style.feather;
+      expect(f, greaterThan(0.2));
+      expect(
+        _live(t).mosaics.every((m) => (m.style.feather - f).abs() < 1e-9),
+        isTrue,
+        reason: '每一塊都要一起變',
+      );
+
+      await t.tap(find.text('像素化'));
+      await _settle(t, 6);
+      expect(find.text('柔邊'), findsNothing);
+      expect(
+        _live(t).mosaics.every((m) => m.style.feather == 0),
+        isTrue,
+        reason: '像素化不柔邊（硬邊的格子）',
+      );
+      await t.tap(find.text('模糊'));
+      await _settle(t, 6);
+      expect(
+        _live(t).mosaics.first.style.feather,
+        closeTo(f, 1e-9),
+        reason: '換回模糊要記得剛剛的柔邊',
+      );
+      expect(t.takeException(), isNull);
+    });
+
     testWidgets('找不到（通道回 null）：不炸、不加東西', (t) async {
       _faceReply = null;
       await _open(t);

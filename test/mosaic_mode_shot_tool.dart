@@ -369,6 +369,15 @@ void main() {
     await t.tap(find.text('模糊'));
     await settle(t, 6);
     await snap(t, 'mz_photo_blur.png');
+
+    // 模糊的柔邊拉到大約七成
+    final feather = find.descendant(
+      of: find.ancestor(of: find.text('柔邊'), matching: find.byType(Row)).first,
+      matching: find.byType(Slider),
+    );
+    await t.drag(feather, const Offset(60, 0));
+    await settle(t, 6);
+    await snap(t, 'mz_photo_blur_feather.png');
     await t.pump(const Duration(seconds: 4));
   });
 

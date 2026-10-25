@@ -83,6 +83,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   final MosaicStyle _mzStyle = MosaicStyle(strength: 0.85);
   bool _mzOval = true;
 
+  /// 模糊的柔邊：換成像素化／純色時柔邊歸零（它們沒有柔邊），這裡記著，
+  /// 換回模糊再拿出來
+  double _mzBlurFeather = 0;
+
   /// 下面那排的「大小」（全部一起）：1＝找臉／新加當下的大小。拉動＝每一塊
   /// 照自己現在的大小一起放大縮小（筆畫是粗細）；要單獨調哪一塊就兩指捏它
   double _mzSize = 1.0;
@@ -1599,7 +1603,17 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
     void setType(int type) {
       _pushUndo();
-      setState(() => _mzApply((s) => s.type = type));
+      // 柔邊只給模糊（像素化的重點是硬邊的格子，使用者在筆刷那邊指定過；
+      // 純色這裡沒有柔邊）：離開模糊先記住它的柔邊，換回來再拿出來
+      if (_mzStyle.type == 1) _mzBlurFeather = _mzStyle.feather;
+      final feather = type == 1 ? _mzBlurFeather : 0.0;
+      setState(
+        () => _mzApply(
+          (s) => s
+            ..type = type
+            ..feather = feather,
+        ),
+      );
     }
 
     void setOval(bool oval) {
@@ -1735,8 +1749,24 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
                       _liveRepaint();
                     },
                     onChangeEnd: (_) => _liveEnd(),
-                  )
-                else
+                  ),
+                // 模糊才有：邊緣淡化（使用者問「模糊有邊緣淡化的選項嗎」）
+                if (_mzStyle.type == 1)
+                  sliderRow(
+                    label: '柔邊',
+                    value: _mzStyle.feather,
+                    min: 0,
+                    max: 1,
+                    readout: '${(_mzStyle.feather * 100).round()}',
+                    unit: '%',
+                    onChangeStart: (_) => _pushUndo(),
+                    onChanged: (v) {
+                      _mzApply((s) => s.feather = v);
+                      _liveRepaint();
+                    },
+                    onChangeEnd: (_) => _liveEnd(),
+                  ),
+                if (_mzStyle.type == 2)
                   SizedBox(
                     height: 40,
                     child: Row(
@@ -1789,18 +1819,26 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
 
   /// 馬賽克模式的下半部固定這麼高：四排（縮圖、效果、大小、濃度）＋浮動鈕列
   /// 剛好放得下、不用捲，剩下的高度全給照片（手機越高照片越大）。
-  /// 以前是上 6 下 4 的比例：面板塞不下，最後一排滑桿被鈕列的漸層蓋成灰的
+  /// 以前是上 6 下 4 的比例：面板塞不下，最後一排滑桿被鈕列的漸層蓋成灰的。
+  /// 模糊多一排柔邊，就多那一排的高度
   double _mzPanelHeight(BuildContext context) {
     // 字級放大時多留一點（磚上的字、滑桿的字跟著變高）；再大就捲
     final t = (MediaQuery.textScalerOf(context).scale(12) / 12).clamp(1.0, 2.0);
     const content = 10 + 52 + 14 + 66 + 10 + 34 + 40 + 6;
-    return content + (t - 1) * 40 + _mzBarHeight(context);
+    final feather = _mzStyle.type == 1 && !_brushMode ? 34.0 : 0.0;
+    return content + feather + (t - 1) * 40 + _mzBarHeight(context);
   }
 
   /// 下半部（面板＋浮動鈕列）：一般模式照比例分（上 4 下 6），
-  /// 馬賽克模式固定高度、其餘全給照片
+  /// 馬賽克模式固定高度、其餘全給照片。高度變（模糊多一排柔邊）時
+  /// 滑一下過去，照片不要瞬間跳
   Widget _panelArea(Widget child) => _mosaicMode
-      ? SizedBox(height: _mzPanelHeight(context), child: child)
+      ? AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          height: _mzPanelHeight(context),
+          child: child,
+        )
       : Expanded(flex: 6, child: child);
 
   /// 大小滑桿按下去：拍一次上一步，記下這一刻每一塊的大小
