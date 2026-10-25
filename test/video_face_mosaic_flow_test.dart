@@ -418,4 +418,64 @@ void main() {
     }
     await settle(t, 80);
   });
+  // 10-25 Android：影片的找臉回 {samples, info}（帶流水帳），iOS 照舊回清單
+  void answerVideo(Object? Function() reply) {
+    TestWidgetsFlutterBinding.ensureInitialized().defaultBinaryMessenger
+        .setMockMethodCallHandler(_face, (call) async {
+          if (call.method == 'analyzeVideo') {
+            analyzed.add((call.arguments as Map)['path'] as String);
+            return reply();
+          }
+          return null;
+        });
+  }
+
+  testWidgets('Android 回 {samples, info}：照樣每個人一條軌', (t) async {
+    answerVideo(() => {'samples': _samples(), 'info': '解 90 格／找 31 格／臉 62'});
+    await openWithVideo(t);
+    await autoFace(t);
+    expect(analyzed, ['/v.work.mp4']);
+    expect(faceClips(t).length, 2, reason: '兩個人兩條');
+    await settle(t, 80);
+  });
+
+  testWidgets('Android 一張臉都沒找到：提示帶著流水帳（分得出真的沒臉還是走不通）', (t) async {
+    const info = '解 90 格／找 31 格／臉 0／沒影像 0／失敗 0｜c2.qti.avc.decoder，轉 90°';
+    answerVideo(
+      () => {
+        'samples': [
+          for (var i = 0; i <= 30; i++) {'t': i / 10, 'f': const []},
+        ],
+        'info': info,
+      },
+    );
+    await openWithVideo(t);
+    await autoFace(t);
+    expect(faceClips(t), isEmpty);
+    expect(find.textContaining('沒有找到臉'), findsOneWidget);
+    expect(find.textContaining(info), findsOneWidget);
+    // 帶原因的提示多留 6 秒：假時間推過去，計時器才收得乾淨
+    await t.pump(const Duration(seconds: 7));
+    await settle(t, 20);
+  });
+
+  testWidgets('Android 整支走不通：提示帶著原因，不加東西', (t) async {
+    answerVideo(
+      () => throw PlatformException(
+        code: 'face_failed',
+        message:
+            '找臉｜IllegalStateException @ MainActivity.analyzeVideoFaces'
+            '｜每一格都找不了：NullPointerException: boom',
+        details: '解 90 格／找 31 格／臉 0／沒影像 0／失敗 31',
+      ),
+    );
+    await openWithVideo(t);
+    await autoFace(t);
+    expect(faceClips(t), isEmpty);
+    expect(find.textContaining('這支影片沒辦法自動找臉'), findsOneWidget);
+    expect(find.textContaining('每一格都找不了'), findsOneWidget);
+    // 帶原因的提示多留 6 秒：假時間推過去，計時器才收得乾淨
+    await t.pump(const Duration(seconds: 7));
+    await settle(t, 20);
+  });
 }

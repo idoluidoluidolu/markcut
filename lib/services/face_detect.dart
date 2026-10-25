@@ -86,15 +86,27 @@ class FaceDetect {
   }) async {
     if (kIsWeb || path.isEmpty || (job?.cancelled ?? false)) return null;
     _listen();
+    lastError = null;
+    lastVideoInfo = null;
     final token = _nextToken++;
     job?._token = token;
     if (onProgress != null) _progress[token] = onProgress;
     try {
-      final r = await _ch.invokeMethod<List<Object?>>('analyzeVideo', {
+      final raw = await _ch.invokeMethod<Object?>('analyzeVideo', {
         'path': path,
         'token': token,
         'fps': fps,
       });
+      // Android 回 {samples, info}（帶流水帳），iOS 回清單
+      List<Object?>? r;
+      if (raw is Map) {
+        final info = raw['info'];
+        if (info is String && info.isNotEmpty) lastVideoInfo = info;
+        final s = raw['samples'];
+        if (s is List) r = s;
+      } else if (raw is List) {
+        r = raw;
+      }
       if (r == null || (job?.cancelled ?? false)) return null;
       final out = <FaceSample>[];
       for (final e in r) {
@@ -117,7 +129,11 @@ class FaceDetect {
       return out;
     } on MissingPluginException {
       return null;
-    } on PlatformException {
+    } on PlatformException catch (e) {
+      lastError = e.message ?? e.code;
+      final d = e.details;
+      if (d is String && d.isNotEmpty) lastVideoInfo = d;
+      Diag.ev('影片找臉失敗：$lastError');
       return null;
     } finally {
       _progress.remove(token);
@@ -128,16 +144,24 @@ class FaceDetect {
   /// 上一趟找到一半 App 被關掉，先別自動找
   static const fuseKey = 'face';
 
-  /// 最近一次照片找臉，原生那邊回的失敗原因（哪一步｜例外 @ 呼叫位置｜
-  /// 訊息）；檔案讀不到、成功都是 null
+  /// 最近一次找臉（照片或影片），原生那邊回的失敗原因（哪一步｜例外 @
+  /// 呼叫位置｜訊息）；檔案讀不到、成功都是 null
   static String? lastError;
+
+  /// 最近一次影片找臉的流水帳（Android：解了幾格、找了幾格、幾張臉、
+  /// 失敗幾格、解碼器與格式）。iOS 沒有
+  static String? lastVideoInfo;
 
   /// [lastError] 截到提示放得下的長度（提示的第二行：實機上出事時，
   /// 截圖就看得到是哪一步、哪個類別）
-  static String? get lastErrorBrief {
-    final e = lastError;
-    if (e == null) return null;
-    return e.length > 160 ? '${e.substring(0, 160)}…' : e;
+  static String? get lastErrorBrief => _brief(lastError);
+
+  /// [lastVideoInfo] 截到提示放得下的長度（影片找不到臉時放進提示）
+  static String? get lastVideoInfoBrief => _brief(lastVideoInfo);
+
+  static String? _brief(String? s) {
+    if (s == null) return null;
+    return s.length > 160 ? '${s.substring(0, 160)}…' : s;
   }
 
   /// 照片裡的臉。偵測不了（web、通道不在、檔案讀不到）回 null；

@@ -228,6 +228,33 @@ private object ExitRecorder {
     }
 }
 
+/// 影片找臉的流水帳：跟著結果回 Dart，找不到臉時放進提示——實機截圖就看得出
+/// 卡在哪：解不出格子、拿不到影像、每一格都丟例外，還是真的沒有臉
+private class VideoFaceStats {
+    /// 做到哪一步（整支失敗時跟原因一起回）
+    var step = "建立偵測器"
+    /// 解碼器吐出來的格子
+    var frames = 0
+    /// 輪到、拿到影像、送去找臉的
+    var sent = 0
+    /// 輪到卻拿不到影像（getOutputImage 是 null 或丟例外）
+    var noImage = 0
+    /// 送去找臉卻丟例外的
+    var failed = 0
+    var faces = 0
+    var firstError: String? = null
+    /// 解碼器名字、轉向、格子大小、色彩格式
+    var detail = ""
+
+    fun note(e: Throwable) {
+        if (firstError == null) firstError = "${e.javaClass.simpleName}: ${e.message ?: ""}"
+    }
+
+    fun summary(): String =
+        "解 ${frames} 格／找 ${sent} 格／臉 ${faces}／沒影像 ${noImage}／失敗 ${failed}｜${detail}" +
+            (firstError?.let { "｜${it}" } ?: "")
+}
+
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : FlutterActivity() {
     // 系統抽幀 API 的解碼成本與 codec 選擇依來源及裝置而異。
@@ -384,8 +411,10 @@ class MainActivity : FlutterActivity() {
                     }
                     faceExec.execute {
                         var last = -1.0
+                        val stats = VideoFaceStats()
+                        var failure: String? = null
                         val samples = try {
-                            analyzeVideoFaces(path, fps, { faceCancelled.contains(token) }) { p ->
+                            analyzeVideoFaces(path, fps, stats, { faceCancelled.contains(token) }) { p ->
                                 // 每 1% 送一次就夠，送太密只是把主執行緒塞滿
                                 if (p - last >= 0.01 || p >= 1.0) {
                                     last = p
@@ -397,11 +426,21 @@ class MainActivity : FlutterActivity() {
                                     }
                                 }
                             }
-                        } catch (_: Throwable) {
+                        } catch (e: Throwable) {
+                            failure = describeFailure(stats.step, e)
                             null
                         }
                         faceCancelled.remove(token)
-                        mainHandler.post { result.success(samples) }
+                        val why = failure
+                        val info = stats.summary()
+                        mainHandler.post {
+                            if (why != null) {
+                                result.error("face_failed", why, info)
+                            } else {
+                                // 帶著流水帳（Dart 找不到臉時放進提示；iOS 回的是清單）
+                                result.success(mapOf("samples" to samples, "info" to info))
+                            }
+                        }
                     }
                     return@setMethodCallHandler
                 }
@@ -469,14 +508,7 @@ class MainActivity : FlutterActivity() {
                             } catch (_: Throwable) {}
                         }
                     } catch (e: Throwable) {
-                        // Tasks.await 包了一層 ExecutionException：報真正的那個
-                        val cause = e.cause ?: e
-                        // 哪一步｜哪個例外 @ 最上面兩層呼叫｜訊息（10-25 只回例外＋
-                        // 訊息，NullPointerException 看不出是誰）
-                        val at = cause.stackTrace.take(2).joinToString(" ← ") {
-                            "${it.className.substringAfterLast('.')}.${it.methodName}"
-                        }
-                        val msg = "${step}｜${cause.javaClass.simpleName} @ ${at}｜${cause.message ?: ""}"
+                        val msg = describeFailure(step, e)
                         val stack = android.util.Log.getStackTraceString(e).take(4000)
                         reply { result.error("face_failed", msg, stack) }
                     }
@@ -484,13 +516,27 @@ class MainActivity : FlutterActivity() {
             }
     }
 
+    /// 找臉失敗的一行：哪一步｜哪個例外 @ 最上面兩層呼叫｜訊息（10-25 只回
+    /// 例外＋訊息，NullPointerException 看不出是誰）
+    private fun describeFailure(step: String, e: Throwable): String {
+        // Tasks.await 包了一層 ExecutionException：報真正的那個
+        val cause = e.cause ?: e
+        val at = cause.stackTrace.take(2).joinToString(" ← ") {
+            "${it.className.substringAfterLast('.')}.${it.methodName}"
+        }
+        return "${step}｜${cause.javaClass.simpleName} @ ${at}｜${cause.message ?: ""}"
+    }
+
     /// 影片每 1/[fps] 秒取一格找臉。MediaCodec 順著硬體解碼（不 seek），
-    /// 沒輪到的格子直接丟；輪到的拿 getOutputImage（YUV_420_888）交給
-    /// ML Kit，旋轉旗標一起給，回來的框就是畫面上看到的方向。
-    /// 回 [{t, f: [[x, y, w, h]]}]；讀不到回 null；被取消回到目前為止的
+    /// 沒輪到的格子直接丟；輪到的拿 getOutputImage（YUV_420_888）自己轉成
+    /// NV21 交給 ML Kit（見 [yuvToNv21]），旋轉旗標一起給，回來的框就是畫面上
+    /// 看到的方向。過程記在 [stats]。
+    /// 回 [{t, f: [[x, y, w, h]]}]；讀不到回 null；被取消回到目前為止的；
+    /// 一格影像都拿不到、或每一格都丟例外＝這條路走不通，丟例外（帶原因）
     private fun analyzeVideoFaces(
         path: String,
         fps: Double,
+        stats: VideoFaceStats,
         cancelled: () -> Boolean,
         progress: (Double) -> Unit,
     ): List<Map<String, Any>>? {
@@ -503,6 +549,7 @@ class MainActivity : FlutterActivity() {
                 .build(),
         )
         try {
+            stats.step = "開檔"
             extractor.setDataSource(path)
             var track = -1
             for (i in 0 until extractor.trackCount) {
@@ -521,19 +568,23 @@ class MainActivity : FlutterActivity() {
             } else {
                 0L
             }
-            val rotation = if (format.containsKey(MediaFormat.KEY_ROTATION)) {
+            val rawRotation = if (format.containsKey(MediaFormat.KEY_ROTATION)) {
                 format.getInteger(MediaFormat.KEY_ROTATION)
             } else {
                 videoRotation(path)
             }
+            // ML Kit 只吃 0／90／180／270（有的檔寫 -90）
+            val rotation = (rawRotation % 360 + 360) % 360
             format.setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
             )
+            stats.step = "解碼"
             val dec = MediaCodec.createDecoderByType(mime)
             codec = dec
             dec.configure(format, null, null, 0)
             dec.start()
+            stats.detail = "${dec.name}，轉 ${rotation}°"
 
             val step = 1.0 / fps
             var next = Double.NEGATIVE_INFINITY
@@ -545,6 +596,8 @@ class MainActivity : FlutterActivity() {
             var idle = 0
             while (!outputDone) {
                 if (cancelled()) return samples
+                // 每一輪先標回解碼：解碼器這時候丟的例外才不會被標成上一格的步驟
+                stats.step = "解碼"
                 if (!inputDone) {
                     val inIdx = dec.dequeueInputBuffer(10_000)
                     if (inIdx >= 0) {
@@ -565,31 +618,59 @@ class MainActivity : FlutterActivity() {
                     continue
                 }
                 idle = 0
-                if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
+                val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                if (eos) outputDone = true
                 val t = info.presentationTimeUs / 1_000_000.0
-                if (info.size > 0 && t >= next) {
-                    // 容許半格（60fps）的時間抖動，不然 30fps 的片子會一格偏一格
-                    next = t + step - 0.5 / 60
+                // 結束旗標那一格多半是空的；其他的就算 size 回 0（有的解碼器把畫面
+                // 放在圖形緩衝裡）也照樣去拿影像
+                val isFrame = info.size > 0 || !eos
+                if (isFrame) stats.frames++
+                if (isFrame && t >= next) {
+                    stats.step = "拿影像"
                     val image = try {
                         dec.getOutputImage(outIdx)
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        stats.note(e)
                         null
                     }
-                    if (image != null) {
+                    if (image == null) {
+                        // 沒拿到不算取過：下一格再試
+                        stats.noImage++
+                    } else {
+                        // 容許半格（60fps）的時間抖動，不然 30fps 的片子會一格偏一格
+                        next = t + step - 0.5 / 60
+                        stats.sent++
                         val faces = ArrayList<List<Double>>()
                         try {
+                            // 拿到影像就記格式（轉換失敗的時候最需要它）
+                            if (stats.sent == 1) {
+                                stats.detail += "，${image.cropRect.width()}×${image.cropRect.height()}" +
+                                    " 格式 ${image.format}" +
+                                    " 間距 ${image.planes[0].pixelStride}/${image.planes[1].pixelStride}"
+                            }
+                            stats.step = "轉格式"
+                            val (nv21, w, h) = yuvToNv21(image)
+                            stats.step = "找臉"
                             val found = Tasks.await(
-                                detector.process(InputImage.fromMediaImage(image, rotation)),
+                                detector.process(
+                                    InputImage.fromByteArray(nv21, w, h, rotation, InputImage.IMAGE_FORMAT_NV21),
+                                ),
+                                10,
+                                TimeUnit.SECONDS,
                             )
                             // ML Kit 的框在「轉正後」的座標：90°／270° 寬高要對調
-                            val upW = (if (rotation % 180 == 0) image.width else image.height).toDouble()
-                            val upH = (if (rotation % 180 == 0) image.height else image.width).toDouble()
+                            val upW = (if (rotation % 180 == 0) w else h).toDouble()
+                            val upH = (if (rotation % 180 == 0) h else w).toDouble()
                             for (f in found) {
                                 val b = f.boundingBox
                                 faces.add(listOf(b.left / upW, b.top / upH, b.width() / upW, b.height() / upH))
                             }
-                        } catch (_: Exception) {
-                            // 這一格認不出來（格式不支援之類）：當作沒有臉，不要整支失敗
+                            stats.faces += found.size
+                        } catch (e: Throwable) {
+                            // 這一格認不出來：當作沒有臉，不要整支失敗（每一格都這樣
+                            // 的話收尾時整支回報，見下面）
+                            stats.failed++
+                            stats.note(e)
                         } finally {
                             image.close()
                         }
@@ -600,6 +681,18 @@ class MainActivity : FlutterActivity() {
                 dec.releaseOutputBuffer(outIdx, false)
             }
             progress(1.0)
+            // 一格都沒解出來、一格影像都沒拿到、或每一格都丟例外：不是「沒有臉」，
+            // 是這台手機這條路走不通——整支回報失敗、原因帶回去（以前回空的，
+            // 畫面只說找不到臉）
+            if (stats.frames == 0) {
+                throw IllegalStateException("解碼器一格都沒吐出來")
+            }
+            if (stats.sent == 0) {
+                throw IllegalStateException("拿不到影像：${stats.firstError ?: "getOutputImage 是 null"}")
+            }
+            if (stats.failed == stats.sent) {
+                throw IllegalStateException("每一格都找不了：${stats.firstError ?: "?"}")
+            }
             return samples
         } finally {
             try {
@@ -611,6 +704,61 @@ class MainActivity : FlutterActivity() {
             extractor.release()
             detector.close()
         }
+    }
+
+    /// 解碼器給的一格（YUV_420_888：U、V 分開放或交錯、各家跨距不同）照裁切框
+    /// 轉成 NV21（Y 整片＋VU 交錯）交給 ML Kit。不用 fromMediaImage：那條是給
+    /// 相機影像的，解碼器的格子它認不對——Android 實機整支影片一張臉都找不到、
+    /// 也不報錯（10-25；照片走點陣圖那條正常）。
+    /// 工作檔還沒轉好就按找臉的話解的是原檔：4K 隔一格取一格（ML Kit 不必吃
+    /// 4K、一格少搬四分之三）；10 位元 HDR 的 P010 每個樣本兩個位元組、值放在
+    /// 高位，取後面那個位元組（取前面的只剩雜訊，一樣一張臉都找不到）
+    private fun yuvToNv21(image: android.media.Image): Triple<ByteArray, Int, Int> {
+        val crop = image.cropRect
+        val k = if (maxOf(crop.width(), crop.height()) >= 2560) 2 else 1
+        // 色度是 2×2 一組：寬高取偶數
+        val w = (crop.width() / k) and 1.inv()
+        val h = (crop.height() / k) and 1.inv()
+        // ImageFormat.YCBCR_P010（API 31 才有這個名字，直接寫值）
+        val hi = if (image.format == 0x36) 1 else 0
+        val out = ByteArray(w * h * 3 / 2)
+        val yPlane = image.planes[0]
+        val yBuf = yPlane.buffer
+        val yRow = yPlane.rowStride
+        val yPix = yPlane.pixelStride
+        val yLast = yBuf.limit() - 1
+        var o = 0
+        for (row in 0 until h) {
+            val base = (crop.top + row * k) * yRow + crop.left * yPix
+            if (yPix == 1 && k == 1) {
+                // 轉成 Buffer 再設位置：直接叫 ByteBuffer.position 會編成新版 SDK
+                // 才有的多載，舊手機上找不到那個方法
+                (yBuf as java.nio.Buffer).position(base)
+                yBuf.get(out, o, w)
+                o += w
+            } else {
+                for (col in 0 until w) {
+                    out[o++] = yBuf.get(minOf(base + col * k * yPix + hi, yLast))
+                }
+            }
+        }
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+        val uBuf = uPlane.buffer
+        val vBuf = vPlane.buffer
+        val uLast = uBuf.limit() - 1
+        val vLast = vBuf.limit() - 1
+        val top = crop.top / 2
+        val left = crop.left / 2
+        for (row in 0 until h / 2) {
+            val ub = (top + row * k) * uPlane.rowStride + left * uPlane.pixelStride
+            val vb = (top + row * k) * vPlane.rowStride + left * vPlane.pixelStride
+            for (col in 0 until w / 2) {
+                out[o++] = vBuf.get(minOf(vb + col * k * vPlane.pixelStride + hi, vLast))
+                out[o++] = uBuf.get(minOf(ub + col * k * uPlane.pixelStride + hi, uLast))
+            }
+        }
+        return Triple(out, w, h)
     }
 
     /// 讀不到軌道上的旋轉旗標時，問 MediaMetadataRetriever

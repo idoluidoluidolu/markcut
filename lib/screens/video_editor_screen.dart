@@ -8779,7 +8779,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     setState(() => _faceJob = null);
     if (job.cancelled) return;
     if (samples == null) {
-      showHint(context, '這支影片沒辦法自動找臉，可以用方框或筆刷', error: true);
+      // 原生回了失敗原因就帶著、多留一下（實機上出事時截圖看得到卡在哪）
+      final why = FaceDetect.lastErrorBrief;
+      showHint(
+        context,
+        '這支影片沒辦法自動找臉，可以用方框或筆刷${why == null ? '' : '\n$why'}',
+        error: true,
+        duration: why == null ? null : const Duration(seconds: 6),
+      );
       return;
     }
     // 找的期間片段被刪掉了：不加
@@ -8798,7 +8805,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       aspect,
       ch > 0 ? cw / ch : _canvasAspectNow,
     );
-    _addFacePlans(plans, video);
+    // Android 帶著找臉的流水帳：一張都沒找到時放進提示（解了幾格、
+    // 找了幾格、有沒有失敗——分得出「真的沒臉」還是「這條路走不通」）
+    _addFacePlans(plans, video, note: FaceDetect.lastVideoInfoBrief);
   }
 
   /// 圖片的自動碼人臉：照片找臉一次，每張臉一條軌、整段不動的圓圈。
@@ -8838,10 +8847,19 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   }
 
   /// 找臉的結果加進時間軸：一個人一條軌，疊在最上面（馬賽克只糊它下面的
-  /// 層）。[from]＝找的那段影片／那張圖（頭像從它抽）
-  void _addFacePlans(List<FaceMosaicPlan> plans, TimelineClip from) {
+  /// 層）。[from]＝找的那段影片／那張圖（頭像從它抽）；[note]＝一張都沒
+  /// 找到時，提示的第二行
+  void _addFacePlans(
+    List<FaceMosaicPlan> plans,
+    TimelineClip from, {
+    String? note,
+  }) {
     if (plans.isEmpty) {
-      showHint(context, '沒有找到臉，可以用方框或筆刷');
+      showHint(
+        context,
+        '沒有找到臉，可以用方框或筆刷${note == null ? '' : '\n$note'}',
+        duration: note == null ? null : const Duration(seconds: 6),
+      );
       return;
     }
     _pause();
