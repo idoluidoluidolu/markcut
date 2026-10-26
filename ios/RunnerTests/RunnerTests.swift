@@ -2910,10 +2910,19 @@ extension RunnerTests {
     XCTAssertLessThan(dist(allBg.left, magenta), 40, "左邊：背景換成洋紅")
     XCTAssertLessThan(dist(allBg.right, magenta), 40, "右邊：背景換成洋紅")
 
-    // 左半是人：左邊照舊、右邊洋紅
+    // 整張都是人：畫面照舊（不是洋紅）。開了去背一定走 CI 合成器，沒開時
+    // 可能走系統的快路，兩條路的色彩轉換本來就差幾階——「照舊」要跟同一條
+    // CI 路比，不能跟沒開去背的比
+    let all = try writeMask { _, _ in 255 }
+    let kept = try probe(["mask": all, "m0": 0.0, "dir": 1, "bg": 1, "color": 0xFFFF_00FF])
+    XCTAssertGreaterThan(dist(kept.left, magenta), 90, "全是人：左邊照舊")
+    XCTAssertGreaterThan(dist(kept.right, magenta), 90, "全是人：右邊照舊")
+    XCTAssertLessThan(dist(kept.left, base.left), 90, "全是人：大致就是原畫面")
+
+    // 左半是人：左邊跟「全是人」那張一樣、右邊洋紅
     let left = try writeMask { x, _ in x < 4 ? 255 : 0 }
     let half = try probe(["mask": left, "m0": 0.0, "dir": 1, "bg": 1, "color": 0xFFFF_00FF])
-    XCTAssertLessThan(dist(half.left, base.left), 30, "左邊是人：跟沒去背一樣")
+    XCTAssertLessThan(dist(half.left, kept.left), 12, "左邊是人：跟全是人那張一樣")
     XCTAssertLessThan(dist(half.right, magenta), 40, "右邊是背景：洋紅")
   }
 }
