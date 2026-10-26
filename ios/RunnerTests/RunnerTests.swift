@@ -2842,3 +2842,78 @@ final class CutoutNativeTests: XCTestCase {
     XCTAssertEqual(masked?["w"] as? Int, 160)
   }
 }
+
+extension RunnerTests {
+  /// 合成播放器整條鏈：Dart 送的 cutout 欄位 → CompSeg → CILayerSpec →
+  /// 合成器每一格在來源格上套遮罩、墊背景（AVAssetImageGenerator 走同一顆
+  /// 自訂合成器取一格）
+  func testCompositionAppliesCutoutFromPayload() throws {
+    let url = try makeScrubVideo()
+    defer { try? FileManager.default.removeItem(at: url) }
+    func writeMask(_ value: @escaping (Int, Int) -> UInt8) throws -> String {
+      let p = (NSTemporaryDirectory() as NSString)
+        .appendingPathComponent("\(UUID().uuidString)-comp.mcmk")
+      let writer = try MCCutoutMaskWriter(path: p, width: 8, height: 8)
+      var d = Data(count: 64)
+      d.withUnsafeMutableBytes { b in
+        let u = b.bindMemory(to: UInt8.self)
+        for y in 0..<8 {
+          for x in 0..<8 { u[y * 8 + x] = value(x, y) }
+        }
+      }
+      for i in 0..<40 { try writer.add(pts: Double(i) / 30, mask: d) }
+      try writer.finish()
+      return p
+    }
+    /// 第 15 格（0.5 秒）左四分之一、右四分之一那兩點的 RGB
+    func probe(_ cutout: [String: Any]?) throws -> (left: [Int], right: [Int]) {
+      let player = CompPlayer(registry: ScrubTestTextureRegistry())
+      defer { player.dispose() }
+      var clip: [String: Any] = [
+        "path": url.path, "start": 0.0, "end": 1.0, "offset": 0.0, "track": 0,
+      ]
+      if let c = cutout { clip["cutout"] = c }
+      XCTAssertTrue(player.build(clips: [clip], texture: false))
+      let item = try XCTUnwrap(player.player.currentItem)
+      let gen = AVAssetImageGenerator(asset: item.asset)
+      gen.videoComposition = item.videoComposition
+      gen.requestedTimeToleranceBefore = .zero
+      gen.requestedTimeToleranceAfter = .zero
+      let cg = try gen.copyCGImage(at: CMTime(value: 15, timescale: 30), actualTime: nil)
+      let w = cg.width
+      let h = cg.height
+      var px = [UInt8](repeating: 0, count: w * h * 4)
+      px.withUnsafeMutableBytes { buf in
+        let ctx = CGContext(
+          data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8,
+          bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        ctx?.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+      }
+      func at(_ x: Int) -> [Int] {
+        let i = ((h / 2) * w + x) * 4
+        return [Int(px[i]), Int(px[i + 1]), Int(px[i + 2])]
+      }
+      return (at(w / 4), at(w * 3 / 4))
+    }
+    func dist(_ a: [Int], _ b: [Int]) -> Int {
+      zip(a, b).map { abs($0 - $1) }.reduce(0, +)
+    }
+    let magenta = [255, 0, 255]
+    let base = try probe(nil)
+    XCTAssertGreaterThan(dist(base.left, magenta), 90, "測試片本身不能是洋紅的")
+    XCTAssertGreaterThan(dist(base.right, magenta), 90, "測試片本身不能是洋紅的")
+
+    // 整張都是背景＋洋紅：兩點都是洋紅
+    let none = try writeMask { _, _ in 0 }
+    let allBg = try probe(["mask": none, "m0": 0.0, "dir": 1, "bg": 1, "color": 0xFFFF_00FF])
+    XCTAssertLessThan(dist(allBg.left, magenta), 40, "左邊：背景換成洋紅")
+    XCTAssertLessThan(dist(allBg.right, magenta), 40, "右邊：背景換成洋紅")
+
+    // 左半是人：左邊照舊、右邊洋紅
+    let left = try writeMask { x, _ in x < 4 ? 255 : 0 }
+    let half = try probe(["mask": left, "m0": 0.0, "dir": 1, "bg": 1, "color": 0xFFFF_00FF])
+    XCTAssertLessThan(dist(half.left, base.left), 30, "左邊是人：跟沒去背一樣")
+    XCTAssertLessThan(dist(half.right, magenta), 40, "右邊是背景：洋紅")
+  }
+}
