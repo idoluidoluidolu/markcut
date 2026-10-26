@@ -43,7 +43,9 @@ class _CutoutLayerState extends State<CutoutLayer> {
   ui.Image? _img;
   int _imgIndex = -1;
   int _want = -1;
-  bool _decoding = false;
+
+  /// 正在解的那一格（-1＝沒在解）：同一格不要因為又重畫一次就再排一次
+  int _inflight = -1;
 
   @override
   void dispose() {
@@ -66,15 +68,15 @@ class _CutoutLayerState extends State<CutoutLayer> {
   Future<void> _decode(int i) async {
     final f = _file;
     if (f == null) return;
-    if (_decoding) {
-      _want = i;
+    if (_inflight >= 0) {
+      if (i != _inflight) _want = i;
       return;
     }
-    _decoding = true;
     try {
       var next = i;
       while (mounted && next >= 0 && identical(f, _file)) {
         _want = -1;
+        _inflight = next;
         final m = f.frame(next);
         if (m == null) break;
         final img = await maskToImage(m, f.width, f.height);
@@ -91,7 +93,7 @@ class _CutoutLayerState extends State<CutoutLayer> {
         next = _want;
       }
     } finally {
-      _decoding = false;
+      _inflight = -1;
     }
   }
 
@@ -101,7 +103,7 @@ class _CutoutLayerState extends State<CutoutLayer> {
     // 遮罩檔讀不到（被清掉、寫壞）：照舊整張畫，不要整層不見
     if (f == null) return widget.child;
     final i = f.indexAt(widget.time);
-    if (i != _imgIndex && i != _want) _decode(i);
+    if (i != _imgIndex && i != _want && i != _inflight) _decode(i);
     final img = _img;
     if (img == null) return widget.child;
     final fg = ShaderMask(

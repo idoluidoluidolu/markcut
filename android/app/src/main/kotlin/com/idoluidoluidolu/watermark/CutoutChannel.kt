@@ -379,6 +379,8 @@ internal class CutoutChannel(
         var segmenter: com.google.mlkit.vision.segmentation.Segmenter? = null
         var ok = false
         try {
+            // 排隊的時候就被叫停了（Activity 收掉、Dart 先按停）：不用再建模型、開解碼器
+            if (cancel.get()) throw InterruptedException("已取消")
             step[0] = "建立模型"
             val seg = Segmentation.getClient(
                 SelfieSegmenterOptions.Builder()
@@ -751,15 +753,23 @@ internal class CutoutMaskWriter(private val path: String, val width: Int, val he
         scratch = ByteArray(width * height + 4096)
         File(path).delete()
         val file = RandomAccessFile(path, "rw")
-        val z = Deflater(6, true)
-        try {
-            file.write(ByteArray(24))
-        } catch (e: Throwable) {
-            z.end()
+        fun dropFile() {
             try {
                 file.close()
             } catch (_: Exception) {}
             File(path).delete()
+        }
+        val z = try {
+            Deflater(6, true)
+        } catch (e: Throwable) {
+            dropFile()
+            throw e
+        }
+        try {
+            file.write(ByteArray(24))
+        } catch (e: Throwable) {
+            z.end()
+            dropFile()
             throw e
         }
         raf = file
