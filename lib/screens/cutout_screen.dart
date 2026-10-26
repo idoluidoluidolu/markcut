@@ -84,6 +84,12 @@ class _CutoutScreenState extends State<CutoutScreen> {
   /// 照片畫在預覽區的哪裡（每次 build 算）
   Rect _photoRect = Rect.zero;
 
+  /// 分析用的長邊。Android 的主體分割每個像素一個 float（全尺寸 12MP 就是
+  /// 幾十 MB），做到 2048 就好，匯出時遮罩放大（邊緣本來就是柔的）。
+  /// 之後跟原生要遮罩都帶著它（原生快取被換掉要重新分析時照同一個大小）
+  int get _analyzeSide =>
+      defaultTargetPlatform == TargetPlatform.android ? 2048 : _kFullSide;
+
   @override
   void initState() {
     super.initState();
@@ -126,13 +132,9 @@ class _CutoutScreenState extends State<CutoutScreen> {
       _analyzing = true;
       _blocked = false;
     });
-    // Android 的主體分割每個像素一個 float（全尺寸 12MP 就是幾十 MB），
-    // 分析做到 2048 就好，匯出時遮罩放大（邊緣本來就是柔的）
     final cut = await CutoutDetect.analyzePhoto(
       widget.photo.path,
-      maxSide: defaultTargetPlatform == TargetPlatform.android
-          ? 2048
-          : _kFullSide,
+      maxSide: _analyzeSide,
     );
     if (!mounted) return;
     if (cut == null) {
@@ -238,6 +240,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
         widget.photo.path,
         ids,
         maxSide: math.max(cut.w, cut.h),
+        analyzeSide: _analyzeSide,
       );
       if (r != null) (m, w, h) = r;
     }
@@ -386,6 +389,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
           path,
           st.ids.toList()..sort(),
           maxSide: long,
+          analyzeSide: _analyzeSide,
         );
         if (r == null) throw StateError('原尺寸遮罩做不出來');
         mask = await maskToImage(r.$1, r.$2, r.$3);

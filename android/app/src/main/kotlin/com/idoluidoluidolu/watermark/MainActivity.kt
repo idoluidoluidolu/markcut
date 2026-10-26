@@ -269,6 +269,9 @@ class MainActivity : FlutterActivity() {
     /// 人臉偵測的解碼工作緒（照片解成點陣不能卡主執行緒）
     private val faceExec = Executors.newSingleThreadExecutor()
 
+    /// 去背通道（onDestroy 要叫停算到一半的影片遮罩、收掉它的工作緒）
+    private var cutout: CutoutChannel? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         // 最先掛：後面任何一步沒接住的例外都要記得到
         ExitRecorder.start(applicationContext)
@@ -280,7 +283,9 @@ class MainActivity : FlutterActivity() {
         registerFaceChannel(flutterEngine)
         // 去背（markcut/cutout）：影片遮罩跟工作檔轉檔一樣，使用者在滑動、
         // 播放時放慢讓路
-        CutoutChannel(mainHandler) { previewWorkGate.interactive }.register(flutterEngine)
+        cutout = CutoutChannel(mainHandler) { previewWorkGate.interactive }.also {
+            it.register(flutterEngine)
+        }
         // cacheDir/picked 每挑一次就多一份複本（同名不覆蓋、從沒人清）：
         // 啟動時在背景掃掉七天以前的。草稿要留的素材 Dart 端會複製進
         // 自己的目錄，這裡的只是匯入時的中繼複本
@@ -1791,6 +1796,9 @@ class MainActivity : FlutterActivity() {
         copyExec.shutdown()
         cancelAllPrep()
         prepExec.shutdown()
+        // 去背：算到一半的影片遮罩叫停（不然會抱著解碼器把整支解完）
+        cutout?.dispose()
+        cutout = null
         super.onDestroy()
     }
 }

@@ -3,6 +3,9 @@ package com.idoluidoluidolu.watermark
 /** Main-thread ownership of cancellable preview work. Export jobs never enter this gate. */
 internal class PreviewWorkGate<T>(private val yieldWork: (T) -> Unit) {
     private val jobs = linkedSetOf<T>()
+    // 主緒寫、去背的影片遮罩在自己的工作緒上讀（CutoutChannel）：要 volatile，
+    // 不然那條工作緒可能一直讀到舊值
+    @Volatile
     var interactive = false
         private set
 

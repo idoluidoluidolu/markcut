@@ -178,11 +178,15 @@ class CutoutDetect {
   }
 
   /// 只留 [ids] 這幾個主體的遮罩，長邊不超過 [maxSide]（匯出要原尺寸
-  /// 就給大一點）。回 (遮罩, 寬, 高)；做不了回 null
+  /// 就給大一點）。回 (遮罩, 寬, 高)；做不了回 null。
+  ///
+  /// [analyzeSide]＝當初 [analyzePhoto] 用的長邊：原生端快取被別張照片換掉、
+  /// 要重新分析時照它——解析度不同，主體的清單與編號可能就不同
   static Future<(Uint8List, int, int)?> photoMask(
     String path,
     List<int> ids, {
     int maxSide = 4096,
+    int? analyzeSide,
   }) async {
     if (kIsWeb || path.isEmpty) return null;
     try {
@@ -190,6 +194,7 @@ class CutoutDetect {
         'path': path,
         'ids': ids,
         'maxSide': maxSide,
+        'analyzeSide': ?analyzeSide,
       });
       if (r == null) return null;
       final w = (r['w'] as num?)?.toInt() ?? 0;
@@ -239,6 +244,8 @@ class CutoutDetect {
       lastError = '這個平台不支援影片去背';
       return false;
     } on PlatformException catch (e) {
+      // 使用者自己按停的：不是失敗，不記
+      if (job?.cancelled ?? false) return false;
       lastError = e.message ?? e.code;
       Diag.ev('影片去背失敗：$lastError');
       return false;

@@ -24,7 +24,9 @@ import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.Deflater
@@ -82,6 +84,14 @@ internal class CutoutChannel(
                     main.post { result.error("cutout_failed", msg, null) }
                 }
             }
+            /// 排進工作緒；Activity 收掉之後（dispose）不再接新的，直接回失敗
+            fun submit(exec: ExecutorService, step: String, work: () -> Unit) {
+                try {
+                    exec.execute { work() }
+                } catch (e: RejectedExecutionException) {
+                    fail(step, e)
+                }
+            }
             when (call.method) {
                 "analyzePhoto" -> {
                     val path = call.argument<String>("path")
@@ -91,7 +101,7 @@ internal class CutoutChannel(
                     }
                     val maxSide = (call.argument<Number>("maxSide") ?: 2048).toInt().coerceIn(256, 4096)
                     val previewSide = (call.argument<Number>("previewSide") ?: 1600).toInt().coerceIn(16, 4096)
-                    photoExec.execute {
+                    submit(photoExec, "照片去背") {
                         try {
                             ok(analyzePhoto(path, maxSide, previewSide))
                         } catch (e: Throwable) {
@@ -107,9 +117,13 @@ internal class CutoutChannel(
                     }
                     val ids = (call.argument<List<Any?>>("ids") ?: emptyList()).mapNotNull { (it as? Number)?.toInt() }
                     val maxSide = (call.argument<Number>("maxSide") ?: 2048).toInt().coerceIn(16, 4096)
-                    photoExec.execute {
+                    // 快取被別張照片換掉時要重新分析：一定要跟當初同一個解析度，
+                    // 主體的編號才對得上（解析度不同，主體清單、順序都可能不同）
+                    val analyzeSide = (call.argument<Number>("analyzeSide") ?: maxOf(maxSide, 1024))
+                        .toInt().coerceIn(256, 4096)
+                    submit(photoExec, "主體遮罩") {
                         try {
-                            ok(photoMask(path, ids, maxSide))
+                            ok(photoMask(path, ids, maxSide, analyzeSide))
                         } catch (e: Throwable) {
                             fail("主體遮罩", e)
                         }
@@ -124,7 +138,7 @@ internal class CutoutChannel(
                         return@setMethodCallHandler
                     }
                     val flag = cancelled.getOrPut(token) { AtomicBoolean(false) }
-                    videoExec.execute {
+                    submit(videoExec, "影片去背") {
                         val stats = arrayOf("開檔")
                         try {
                             var last = -1.0
@@ -154,6 +168,14 @@ internal class CutoutChannel(
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /// Activity 收掉時：叫停算到一半的影片遮罩（不然會抱著解碼器把整支解完）、
+    /// 兩條工作緒不再接新的（已排的照跑完）
+    fun dispose() {
+        for (f in cancelled.values) f.set(true)
+        photoExec.shutdown()
+        videoExec.shutdown()
     }
 
     // ===== 照片 =====
@@ -188,9 +210,9 @@ internal class CutoutChannel(
             val (lw, lh) = fit(w, h, 512)
             val labels = ByteArray(lw * lh)
             for (ly in 0 until lh) {
-                val y = minOf(h - 1, (ly + 0.5) * h / lh).toInt()
+                val y = minOf(h - 1, ((ly + 0.5) * h / lh).toInt())
                 for (lx in 0 until lw) {
-                    val x = minOf(w - 1, (lx + 0.5) * w / lw).toInt()
+                    val x = minOf(w - 1, ((lx + 0.5) * w / lw).toInt())
                     var best = 127
                     var label = 0
                     for (s in subjects) {
@@ -247,9 +269,9 @@ internal class CutoutChannel(
         )
     }
 
-    private fun photoMask(path: String, ids: List<Int>, maxSide: Int): Map<String, Any?>? {
+    private fun photoMask(path: String, ids: List<Int>, maxSide: Int, analyzeSide: Int): Map<String, Any?>? {
         if (cachePath != path) {
-            analyzePhoto(path, maxOf(maxSide, 1024), 64) ?: return null
+            analyzePhoto(path, analyzeSide, 64) ?: return null
         }
         val w = cacheW
         val h = cacheH
@@ -353,14 +375,18 @@ internal class CutoutChannel(
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         var writer: CutoutMaskWriter? = null
-        val segmenter = Segmentation.getClient(
-            SelfieSegmenterOptions.Builder()
-                .setDetectorMode(SelfieSegmenterOptions.STREAM_MODE)
-                .enableRawSizeMask()
-                .build(),
-        )
+        // 在 try 裡面建：建不起來（原生程式庫載不到）也要走 finally 把 extractor 收掉
+        var segmenter: com.google.mlkit.vision.segmentation.Segmenter? = null
         var ok = false
         try {
+            step[0] = "建立模型"
+            val seg = Segmentation.getClient(
+                SelfieSegmenterOptions.Builder()
+                    .setDetectorMode(SelfieSegmenterOptions.STREAM_MODE)
+                    .enableRawSizeMask()
+                    .build(),
+            )
+            segmenter = seg
             step[0] = "開檔"
             extractor.setDataSource(path)
             var track = -1
@@ -399,6 +425,9 @@ internal class CutoutChannel(
             var next = Double.NEGATIVE_INFINITY
             var frames = 0
             var failed = 0
+            // 輪到、卻拿不到影像（getOutputImage 回 null）的格數：整支失敗時
+            // 才分得出是「拿不到影像」還是「算遮罩每格都出錯」
+            var noImage = 0
             var firstError: String? = null
             val info = MediaCodec.BufferInfo()
             var inputDone = false
@@ -439,6 +468,7 @@ internal class CutoutChannel(
                         if (firstError == null) firstError = "${e.javaClass.simpleName}: ${e.message ?: ""}"
                         null
                     }
+                    if (image == null) noImage++
                     if (image != null) {
                         next = t + 1.0 / 30 - 0.5 / 60
                         try {
@@ -446,7 +476,7 @@ internal class CutoutChannel(
                             val bmp = yuvToUpright(image, rotation, 512)
                             step[0] = "算遮罩"
                             val mask = Tasks.await(
-                                segmenter.process(InputImage.fromBitmap(bmp, 0)),
+                                seg.process(InputImage.fromBitmap(bmp, 0)),
                                 10,
                                 TimeUnit.SECONDS,
                             )
@@ -462,6 +492,10 @@ internal class CutoutChannel(
                                 frames++
                             }
                         } catch (e: InterruptedException) {
+                            throw e
+                        } catch (e: java.io.IOException) {
+                            // 寫檔錯（磁碟滿、開不了檔）不會自己好：整支直接失敗，
+                            // 不要每一格都再試一次、解完整支才說算不出來
                             throw e
                         } catch (e: Throwable) {
                             failed++
@@ -481,7 +515,9 @@ internal class CutoutChannel(
             }
             val wr = writer
             if (wr == null || frames == 0) {
-                throw IllegalStateException("一格遮罩都沒算出來（失敗 ${failed} 格：${firstError ?: "?"}）")
+                throw IllegalStateException(
+                    "一格遮罩都沒算出來（失敗 ${failed} 格、拿不到影像 ${noImage} 格：${firstError ?: "?"}）",
+                )
             }
             step[0] = "收尾"
             wr.finish()
@@ -498,7 +534,7 @@ internal class CutoutChannel(
             } catch (_: Exception) {}
             extractor.release()
             try {
-                segmenter.close()
+                segmenter?.close()
             } catch (_: Throwable) {}
         }
     }
@@ -703,17 +739,31 @@ internal class CutoutChannel(
 /// AppDelegate.swift 的 MCCutoutMaskWriter）。全部小端序、每格 raw deflate
 internal class CutoutMaskWriter(private val path: String, val width: Int, val height: Int) {
     private val raf: RandomAccessFile
-    private val deflater = Deflater(6, true)
-    private val scratch = ByteArray(width * height + 4096)
+    private val deflater: Deflater
+    private val scratch: ByteArray
     private val pts = ArrayList<Double>()
     private val offs = ArrayList<Long>()
     private val lens = ArrayList<Int>()
 
     init {
+        // 尺寸先驗，再配原生的 zlib 跟開檔：任何一步失敗都要把前面配到的收掉
         require(width in 1..65535 && height in 1..65535) { "遮罩尺寸不對 ${width}×${height}" }
+        scratch = ByteArray(width * height + 4096)
         File(path).delete()
-        raf = RandomAccessFile(path, "rw")
-        raf.write(ByteArray(24))
+        val file = RandomAccessFile(path, "rw")
+        val z = Deflater(6, true)
+        try {
+            file.write(ByteArray(24))
+        } catch (e: Throwable) {
+            z.end()
+            try {
+                file.close()
+            } catch (_: Exception) {}
+            File(path).delete()
+            throw e
+        }
+        raf = file
+        deflater = z
     }
 
     fun add(t: Double, mask: ByteArray) {
@@ -726,8 +776,10 @@ internal class CutoutMaskWriter(private val path: String, val width: Int, val he
             if (n >= scratch.size) throw IllegalStateException("遮罩壓縮暫存不夠")
             n += deflater.deflate(scratch, n, scratch.size - n)
         }
-        offs.add(raf.filePointer)
+        // 寫成功才記進索引：寫到一半丟例外的話，三個清單才不會錯位
+        val at = raf.filePointer
         raf.write(scratch, 0, n)
+        offs.add(at)
         pts.add(t)
         lens.add(n)
     }

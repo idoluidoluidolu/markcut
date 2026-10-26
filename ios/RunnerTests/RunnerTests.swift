@@ -2838,7 +2838,7 @@ final class CutoutNativeTests: XCTestCase {
     XCTAssertEqual(m["h"] as? Int, 240)
     let mask = try XCTUnwrap(m["mask"] as? FlutterStandardTypedData)
     XCTAssertEqual(mask.data.count, 320 * 240)
-    let masked = try MCCutout.photoMask(path: p, ids: [], maxSide: 160)
+    let masked = try MCCutout.photoMask(path: p, ids: [], maxSide: 160, analyzeSide: 4096)
     XCTAssertEqual(masked?["w"] as? Int, 160)
   }
 }

@@ -15398,9 +15398,14 @@ extension AppDelegate {
         }
         let ids = (args["ids"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }
         let maxSide = args["maxSide"] as? Int ?? 4096
+        // 快取被別張照片換掉時重新分析要用當初的大小（主體編號才對得上）
+        let analyzeSide = args["analyzeSide"] as? Int ?? max(maxSide, 1024)
         AppDelegate.cutoutQueue.async {
           let r: Result<[String: Any]?, Error> = autoreleasepool {
-            Result { try MCCutout.photoMask(path: path, ids: ids, maxSide: maxSide) }
+            Result {
+              try MCCutout.photoMask(
+                path: path, ids: ids, maxSide: maxSide, analyzeSide: analyzeSide)
+            }
           }
           reply(r)
         }
@@ -15660,13 +15665,15 @@ enum MCCutout {
     return out
   }
 
-  static func photoMask(path: String, ids: [Int], maxSide: Int) throws -> [String: Any]? {
+  static func photoMask(
+    path: String, ids: [Int], maxSide: Int, analyzeSide: Int
+  ) throws -> [String: Any]? {
     cacheLock.lock()
     let hit = cachePath == path && cacheHandler != nil
     cacheLock.unlock()
     if !hit {
-      // 沒分析過（或被別張蓋掉了）：照這次要的大小重新分析一次
-      guard try analyzePhoto(path: path, maxSide: max(maxSide, 1024), previewSide: 64) != nil
+      // 沒分析過（或被別張蓋掉了）：照當初分析的大小重新分析一次
+      guard try analyzePhoto(path: path, maxSide: analyzeSide, previewSide: 64) != nil
       else { return nil }
     }
     cacheLock.lock()
