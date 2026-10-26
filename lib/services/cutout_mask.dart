@@ -24,8 +24,15 @@ import 'dart:typed_data';
 /// 方向），座標 0~1 直接對到整張畫面；寬高比不一定跟畫面一樣（ML Kit
 /// 固定 256×256），用的時候一律拉滿整張畫面
 class CutoutMaskFile {
-  CutoutMaskFile._(this.path, this.width, this.height, this.pts, this._off,
-      this._len, this._raf);
+  CutoutMaskFile._(
+    this.path,
+    this.width,
+    this.height,
+    this.pts,
+    this._off,
+    this._len,
+    this._raf,
+  );
 
   static const magic = 0x4B4D434D; // 'MCMK' 小端序讀成 u32
   static const version = 1;
@@ -206,12 +213,14 @@ Future<(int, int)?> writeCutoutRaw({
   required String outPath,
   required List<double> times,
   int maxSide = 320,
-}) => Isolate.run(() => writeCutoutRawSync(
-  maskPath: maskPath,
-  outPath: outPath,
-  times: times,
-  maxSide: maxSide,
-));
+}) => Isolate.run(
+  () => writeCutoutRawSync(
+    maskPath: maskPath,
+    outPath: outPath,
+    times: times,
+    maxSide: maxSide,
+  ),
+);
 
 /// [writeCutoutRaw] 的本體（同步，測試直接叫）
 (int, int)? writeCutoutRawSync({

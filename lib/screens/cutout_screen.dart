@@ -15,6 +15,7 @@ import '../services/diagnostics.dart';
 import '../services/photo_export.dart';
 import '../services/video_picker.dart';
 import '../theme.dart';
+import '../widgets/cutout_swatch.dart';
 import '../widgets/watermark_layer.dart' show CheckerPainter;
 
 /// 照片去背：進來自動找主體（人、寵物、物品）全部留下，點畫面上的主體
@@ -437,11 +438,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
 
   Future<bool> _confirmLeave() async {
     if (!_dirty) return true;
-    return showConfirm(
-      context,
-      title: '放棄這次去背？',
-      action: '放棄',
-    );
+    return showConfirm(context, title: '放棄這次去背？', action: '放棄');
   }
 
   // ===== 畫面 =====
@@ -506,7 +503,11 @@ class _CutoutScreenState extends State<CutoutScreen> {
           w = ah * pa;
         }
         final c = Offset(box.maxWidth / 2, box.maxHeight / 2) + _pan;
-        _photoRect = Rect.fromCenter(center: c, width: w * _zoom, height: h * _zoom);
+        _photoRect = Rect.fromCenter(
+          center: c,
+          width: w * _zoom,
+          height: h * _zoom,
+        );
         return ClipRect(
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
@@ -538,7 +539,9 @@ class _CutoutScreenState extends State<CutoutScreen> {
                     top: 12,
                     left: 0,
                     right: 0,
-                    child: Center(child: _busyPill(_analyzing ? '找主體中…' : '更新中…')),
+                    child: Center(
+                      child: _busyPill(_analyzing ? '找主體中…' : '更新中…'),
+                    ),
                   ),
               ],
             ),
@@ -565,7 +568,10 @@ class _CutoutScreenState extends State<CutoutScreen> {
         const SizedBox(
           width: 12,
           height: 12,
-          child: CircularProgressIndicator(strokeWidth: 1.8, color: Colors.white),
+          child: CircularProgressIndicator(
+            strokeWidth: 1.8,
+            color: Colors.white,
+          ),
         ),
         const SizedBox(width: 8),
         Text(text, style: const TextStyle(fontSize: 12, color: Colors.white)),
@@ -580,7 +586,8 @@ class _CutoutScreenState extends State<CutoutScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SizedBox(height: 150, child: _toolBody()),
+          // 三個分頁同一個高度（切分頁時預覽不跳），裝得下兩排磚＋兩條滑桿
+          SizedBox(height: 176, child: _toolBody()),
           const SizedBox(height: 8),
           _toolTabs(),
         ],
@@ -644,7 +651,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
     if (cut == null || photo == null || cut.subjects.isEmpty) {
       return Row(
         children: [
-          SizedBox(width: 84, child: retry),
+          SizedBox(width: 84, child: Center(child: retry)),
           if (cut != null && cut.subjects.isEmpty) ...[
             const SizedBox(width: 12),
             const Expanded(
@@ -661,16 +668,19 @@ class _CutoutScreenState extends State<CutoutScreen> {
       scrollDirection: Axis.horizontal,
       children: [
         for (final s in cut.subjects)
+          // 橫向清單會把子元件撐成整個高度：置中，頭像才是自己的大小
           Padding(
             padding: const EdgeInsets.only(right: 10),
-            child: _SubjectAvatar(
-              photo: photo,
-              box: s.box,
-              on: _st.ids.contains(s.id),
-              onTap: () => _toggle(s.id),
+            child: Center(
+              child: _SubjectAvatar(
+                photo: photo,
+                box: s.box,
+                on: _st.ids.contains(s.id),
+                onTap: () => _toggle(s.id),
+              ),
             ),
           ),
-        SizedBox(width: 84, child: retry),
+        SizedBox(width: 84, child: Center(child: retry)),
       ],
     );
   }
@@ -678,8 +688,8 @@ class _CutoutScreenState extends State<CutoutScreen> {
   Widget _brushBody() => Column(
     mainAxisAlignment: MainAxisAlignment.center,
     children: [
-      SizedBox(
-        height: 62,
+      // 磚的高度照內容長（同馬賽克效果磚）：寫死高度的話邊框＋字高一大就擠出去
+      IntrinsicHeight(
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -742,12 +752,12 @@ class _CutoutScreenState extends State<CutoutScreen> {
 
     final swatches = <Widget>[
       for (final c in kCutoutColors)
-        _Swatch(
+        CutoutSwatch(
           color: Color(c),
           on: st.bg == PhotoCutBg.color && st.color == c,
           onTap: () => setBg(PhotoCutBg.color, color: c),
         ),
-      _Swatch(
+      CutoutSwatch(
         color: null,
         on: st.bg == PhotoCutBg.color && !kCutoutColors.contains(st.color),
         onTap: customColor,
@@ -756,8 +766,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        SizedBox(
-          height: 62,
+        IntrinsicHeight(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -792,11 +801,11 @@ class _CutoutScreenState extends State<CutoutScreen> {
         ),
         const SizedBox(height: 10),
         SizedBox(
-          height: 30,
+          height: 34,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             itemCount: swatches.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 10),
+            separatorBuilder: (_, _) => const SizedBox(width: 6),
             itemBuilder: (_, i) => swatches[i],
           ),
         ),
@@ -843,12 +852,20 @@ class _CutoutScreenState extends State<CutoutScreen> {
       decoration: BoxDecoration(
         color: on ? kPanelHi : Colors.transparent,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: on ? kAmber : kClipBorder, width: on ? 1.5 : 1),
+        border: Border.all(
+          color: on ? kAmber : kClipBorder,
+          width: on ? 1.5 : 1,
+        ),
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 24, color: onTap == null ? kTextDim : (on ? kText : kIcon)),
+          Icon(
+            icon,
+            size: 24,
+            color: onTap == null ? kTextDim : (on ? kText : kIcon),
+          ),
           const SizedBox(height: 6),
           FittedBox(
             fit: BoxFit.scaleDown,
@@ -1012,40 +1029,4 @@ class _CropPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_CropPainter o) => o.photo != photo || o.box != box;
-}
-
-/// 背景色的一顆圓點；[color] 是 null＝自訂（彩虹圈）
-class _Swatch extends StatelessWidget {
-  const _Swatch({required this.color, required this.on, required this.onTap});
-
-  final Color? color;
-  final bool on;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: Container(
-      width: 30,
-      height: 30,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: color,
-        gradient: color == null
-            ? const SweepGradient(
-                colors: [
-                  Colors.red,
-                  Colors.yellow,
-                  Colors.green,
-                  Colors.cyan,
-                  Colors.blue,
-                  Colors.purple,
-                  Colors.red,
-                ],
-              )
-            : null,
-        border: Border.all(color: on ? kAmber : kClipBorder, width: on ? 2.5 : 1),
-      ),
-    ),
-  );
 }

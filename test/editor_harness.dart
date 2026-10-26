@@ -167,6 +167,9 @@ class FakeComp {
   bool capAtEnd = false;
   int nativeMs = 0;
   int builds = 0;
+
+  /// 每一次 build 收到的 payload（看送去原生的欄位對不對）
+  final buildArgs = <Map<Object?, Object?>>[];
   final seeks = <Map<Object?, Object?>>[];
   Timer? _clock;
 
@@ -179,6 +182,7 @@ class FakeComp {
           return true;
         case 'build':
           builds++;
+          buildArgs.add(Map<Object?, Object?>.from(call.arguments as Map));
           return <String, dynamic>{
             'textureId': 1,
             'duration': duration,

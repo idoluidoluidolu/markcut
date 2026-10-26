@@ -932,9 +932,11 @@ Future<List<String>> _buildCommand(
         );
         fg = 'cc$k';
     }
+    // 跟一般圖層一樣只有要旋轉／透明度才轉 RGBA：挖好的畫面本來就是
+    // yuva420p，多轉一趟 RGBA 再疊回 YUV 色度會被重取樣一次（畫質變差）
     fc.write(
       '[$fg]'
-      '${large?.filter ?? '$cropF${c.mirror ? 'hflip,' : ''}format=rgba,$spinF'}'
+      '${large?.filter ?? '$cropF${c.mirror ? 'hflip,' : ''}${spinF.isEmpty ? '' : 'format=rgba,$spinF'}'}'
       'null'
       '${vFades(c)}'
       ',setpts=PTS-STARTPTS+${_f(a - w0)}/TB'

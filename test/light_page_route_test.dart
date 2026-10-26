@@ -53,6 +53,7 @@ const _editors = <String>{
   'CollageScreen',
   'CropScreen',
   '_DrawScreen',
+  'CutoutScreen',
 };
 
 /// `MaterialPageRoute(builder: (_) => Foo(`

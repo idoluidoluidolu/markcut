@@ -21,7 +21,8 @@ class CutStroke {
   CutStroke({required this.keep, required this.width, List<Offset>? points})
     : points = points ?? [];
 
-  CutStroke copy() => CutStroke(keep: keep, width: width, points: List.of(points));
+  CutStroke copy() =>
+      CutStroke(keep: keep, width: width, points: List.of(points));
 }
 
 /// 一個可以上一步的狀態（選了哪些主體、修邊、背景）

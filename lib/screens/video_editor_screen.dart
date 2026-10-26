@@ -80,6 +80,7 @@ import '../services/scrub_visibility.dart';
 import '../theme.dart';
 import '../widgets/color_grade_panel.dart';
 import '../widgets/cutout_layer.dart';
+import '../widgets/cutout_swatch.dart';
 import '../widgets/text_insert_bar.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/face_avatar.dart';
@@ -9212,53 +9213,24 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             );
           }
 
-          Widget swatch(int? color) {
-            final on =
+          Widget swatch(int? color) => CutoutSwatch(
+            color: color == null ? null : Color(color),
+            on:
                 cut != null &&
+                cut.bg == CutoutBg.color &&
                 (color == null
                     ? !kCutoutColors.contains(cut.color)
-                    : cut.color == color);
-            return GestureDetector(
-              onTap: () async {
-                if (cut == null) return;
-                var v = color;
-                if (v == null) {
-                  v = await pickColor(
-                    context,
-                    Color(cut.color),
-                    title: '背景顏色',
-                  );
-                  if (v == null || !mounted) return;
-                }
-                set(ClipCutout(bg: CutoutBg.color, color: v));
-              },
-              child: Container(
-                width: 30,
-                height: 30,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: color == null ? null : Color(color),
-                  gradient: color == null
-                      ? const SweepGradient(
-                          colors: [
-                            Colors.red,
-                            Colors.yellow,
-                            Colors.green,
-                            Colors.cyan,
-                            Colors.blue,
-                            Colors.purple,
-                            Colors.red,
-                          ],
-                        )
-                      : null,
-                  border: Border.all(
-                    color: on ? kAmber : kClipBorder,
-                    width: on ? 2.5 : 1,
-                  ),
-                ),
-              ),
-            );
-          }
+                    : cut.color == color),
+            onTap: () async {
+              if (cut == null) return;
+              var v = color;
+              if (v == null) {
+                v = await pickColor(context, Color(cut.color), title: '背景顏色');
+                if (v == null || !mounted) return;
+              }
+              set(ClipCutout(bg: CutoutBg.color, color: v));
+            },
+          );
 
           return SafeArea(
             child: Padding(
@@ -9298,13 +9270,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     if (cut.bg == CutoutBg.color) ...[
                       const SizedBox(height: 12),
                       SizedBox(
-                        height: 30,
+                        height: 34,
                         child: ListView(
                           scrollDirection: Axis.horizontal,
                           children: [
                             for (final col in [...kCutoutColors, null])
                               Padding(
-                                padding: const EdgeInsets.only(right: 10),
+                                padding: const EdgeInsets.only(right: 6),
                                 child: swatch(col),
                               ),
                           ],

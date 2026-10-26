@@ -125,13 +125,17 @@ class _CutoutLayerState extends State<CutoutLayer> {
       case CutoutBg.color:
         return Stack(
           fit: StackFit.expand,
-          children: [ColoredBox(color: Color(widget.cut.color)), fg],
+          children: [
+            ColoredBox(color: Color(widget.cut.color)),
+            fg,
+          ],
         );
       case CutoutBg.blur:
         final src = widget.blurSource;
         return LayoutBuilder(
           builder: (context, box) {
-            final s = (box.biggest.longestSide.isFinite
+            final s =
+                (box.biggest.longestSide.isFinite
                     ? box.biggest.longestSide
                     : 0.0) *
                 0.02;

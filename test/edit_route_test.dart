@@ -27,6 +27,7 @@ const _editors = <String, List<String>>{
   'collage_screen.dart': ['CollageScreen'],
   'crop_screen.dart': ['CropScreen'],
   'draw_screen.dart': ['_DrawScreen'],
+  'cutout_screen.dart': ['CutoutScreen'],
 };
 
 /// 瀏覽用的頁：右滑返回照舊，使用者只嫌編輯頁誤觸

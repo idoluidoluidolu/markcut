@@ -5,7 +5,7 @@
 //   1. 首頁本體只有 logo、右上角個人中心、底部那顆「＋ 開始」——沒有
 //      任何入口文字（舊的四個方塊、更舊的「加入浮水印」「製作浮水印」
 //      都不在）
-//   2. ＋叫出來的第一層：五列 浮水印／照片拼圖／GIF／馬賽克／剪輯，順序、
+//   2. ＋叫出來的第一層：六列 浮水印／照片拼圖／GIF／馬賽克／去背／剪輯，順序、
 //      文案、一行說明、圖示；右邊不畫箭頭（使用者指定）
 //   3. 每一列走的路：
 //        浮水印   → 第二層「照片／影片」→ 對應的選取器 →
@@ -18,6 +18,8 @@
 //        馬賽克   → 第二層「照片／影片」：照片挑一張進照片編輯器的馬賽克
 //                   模式；影片挑一支進剪輯（mosaicEntry，接好就跳馬賽克
 //                   選單）
+//        去背     → 第二層「照片／影片」：照片挑一張進去背頁；影片挑一支
+//                   進剪輯（cutoutEntry，接好就開去背、開始算遮罩）
 //        剪輯     → 不開選取器、不進第二層，直接開一條空的時間軸
 //   4. 第二層左上角的返回：回到第一層（不是關掉整個選單），整條列
 //      都按得到
@@ -43,6 +45,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:markcut/nav.dart';
 import 'package:markcut/screens/batch_watermark_screen.dart';
 import 'package:markcut/screens/collage_screen.dart';
+import 'package:markcut/screens/cutout_screen.dart';
 import 'package:markcut/screens/gif_screen.dart';
 import 'package:markcut/screens/home_screen.dart';
 import 'package:markcut/screens/photo_editor_screen.dart';
@@ -55,12 +58,13 @@ const _pngB64 =
     'LQkAXrdVAdmuFfUAAAAASUVORK5CYII=';
 
 /// ＋選單第一層，由上而下
-const _labels = ['浮水印', '照片拼圖', 'GIF', '馬賽克', '剪輯'];
+const _labels = ['浮水印', '照片拼圖', 'GIF', '馬賽克', '去背', '剪輯'];
 const _subs = [
   '照片、影片，單支或整批快速加入浮水印',
   '多張照片拼成一張',
   '影片轉成 GIF',
   '照片、影片自動找出人臉打碼',
+  '照片、影片自動去掉背景',
   '開啟一個空專案自由編輯',
 ];
 const _icons = [
@@ -68,6 +72,7 @@ const _icons = [
   Icons.grid_view_rounded,
   Icons.gif_box_outlined,
   Icons.blur_on,
+  Icons.auto_fix_high_outlined,
   Icons.smart_display_outlined,
 ];
 
@@ -290,6 +295,7 @@ void main() {
         '照片拼圖',
         'GIF',
         '馬賽克',
+        '去背',
       ]) {
         expect(find.text(x), findsNothing, reason: '「$x」不該出現在收起來的首頁');
       }
@@ -639,6 +645,65 @@ void main() {
         expect(find.text(x), findsOneWidget, reason: '沒回到第一層（少了「$x」）');
       }
       expect(_images.calls + _files.calls, 0, reason: '返回不該開選取器');
+      expect(spy.edits, isEmpty, reason: '返回不該推頁');
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('去背 → 第二層「照片／影片」；選照片 → 挑一張進去背頁', (t) async {
+      _images.next = [XFile(_p('a.png'), name: 'a.png')];
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('去背'));
+      await _settle(t);
+
+      expect(find.text('去背'), findsOneWidget, reason: '第二層要標上一層是誰');
+      expect(find.text('人、寵物、物品都可以'), findsOneWidget);
+      expect(find.text('一次一支，人像自動去背'), findsOneWidget);
+      expect(_images.calls + _files.calls, 0, reason: '還沒選就開了選取器');
+
+      await t.tap(find.text('照片'));
+      await _settle(t, 20);
+      expect(_images.calls, 1, reason: '沒有開照片選取器');
+      final page = spy.lastEdit(t);
+      expect(page, isA<CutoutScreen>());
+      expect((page as CutoutScreen).photo.path, _p('a.png'));
+      await _drain(t);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('去背 → 影片：第一支進剪輯、接好就開去背', (t) async {
+      _files.next = [_p('a.mp4'), _p('b.mp4')];
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('去背'));
+      await _settle(t);
+      await t.tap(find.text('影片'));
+      await _settle(t, 20);
+
+      expect(_files.calls, 1, reason: '沒有開影片選取器');
+      expect(_files.lastType, FileType.video);
+      final page = spy.lastEdit(t);
+      expect(page, isA<VideoEditorScreen>());
+      expect((page as VideoEditorScreen).videoPath, _p('a.mp4'));
+      expect(page.cutoutEntry, isTrue, reason: '接好要開去背');
+      expect(page.mosaicEntry, isFalse);
+      await _drain(t);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('去背第二層的返回：回到第一層', (t) async {
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('去背'));
+      await _settle(t);
+      await t.tap(find.byIcon(Icons.chevron_left));
+      await _settle(t);
+      for (final x in _labels) {
+        expect(find.text(x), findsOneWidget, reason: '沒回到第一層（少了「$x」）');
+      }
       expect(spy.edits, isEmpty, reason: '返回不該推頁');
       expect(t.takeException(), isNull);
     });
