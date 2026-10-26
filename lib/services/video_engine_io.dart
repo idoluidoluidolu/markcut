@@ -18,6 +18,7 @@ import '../models/timeline.dart';
 import '../models/watermark_settings.dart';
 import 'brush_mask.dart';
 import 'comp_player.dart';
+import 'cutout_mask.dart';
 import 'diagnostics.dart';
 import 'gif_store.dart';
 import 'native_export.dart';
@@ -411,12 +412,16 @@ String _eq(TimelineClip c) => c.color.ffmpeg;
 ///
 /// [maskFiles]：筆刷馬賽克的筆畫遮罩 PNG（clip id → 路徑，見
 /// renderBrushMaskPng）。缺了的筆刷片段退回碼整個包圍盒
+///
+/// 去背的片段：這一段每一格輸出畫面要的遮罩，在這裡產成 gray 原始檔
+///（見 writeCutoutRaw），路徑放進 [tempFiles] 讓呼叫端收尾時刪掉
 Future<List<String>> _buildCommand(
   ExportSpec spec,
   String? wmPath,
   Map<int, String> overlayFiles,
   String outPath, {
   Map<int, String> maskFiles = const {},
+  List<String>? tempFiles,
   double winStart = 0,
   double? winEnd,
   bool videoOnly = false,
@@ -604,6 +609,36 @@ Future<List<String>> _buildCommand(
     if (box == null) continue;
     brushBoxes[c.id] = box;
     if (maskFiles.containsKey(c.id)) maskInput[c.id] = nextInput++;
+  }
+  // 去背片段的遮罩串流：這一段每一格輸出畫面一張（遮罩秒數照片段的時間
+  // 對照查，見 models/cutout.dart），一個片段一個輸入（順序同下面加 -i
+  // 的那一圈）。遮罩檔讀不到的片段照舊整張出去，記一筆
+  final cutoutRaws = <int, (String, int, int)>{};
+  final cutInput = <int, int>{}; // clip id → input index
+  for (final c in segClips) {
+    final s = spec.sources[c.sourceIndex];
+    if (!cutoutActive(c, s)) continue;
+    final (a, b) = visible(c.offset / sp, c.end / sp)!;
+    final n = ((b - a) * fps).ceil() + 1;
+    final times = [
+      for (var i = 0; i < n; i++) cutoutMaskTime(c, s, (a + i / fps) * sp),
+    ];
+    final dir = debugMosaicCmdDir ?? (await getTemporaryDirectory()).path;
+    final p =
+        '$dir${Platform.pathSeparator}cutraw_'
+        '${DateTime.now().microsecondsSinceEpoch}_${c.id}.gray';
+    final r = await writeCutoutRaw(
+      maskPath: s.cutMask!,
+      outPath: p,
+      times: times,
+    );
+    if (r == null) {
+      Diag.note('去背遮罩讀不到（這段照整張匯出）：${s.cutMask}');
+      continue;
+    }
+    tempFiles?.add(p);
+    cutoutRaws[c.id] = (p, r.$1, r.$2);
+    cutInput[c.id] = nextInput++;
   }
   final wmInputIdx = nextInput;
 
@@ -828,6 +863,86 @@ Future<List<String>> _buildCommand(
       // 手機拍的檔案很常「容器長度 > 視訊串流長度」（音軌比較長、
       // 或 VFR 的最後一幀提早結束），而片段長度是照容器長度算的——
       // 用 pass 的話那幾格就直接是黑的，交界處閃一下黑就是這樣來的
+      'eof_action=repeat[ov$k];',
+    );
+  }
+
+  /// 去背的影片圖層：跟 [writeVideoLayer] 同一套時間與幾何，只是順序改成
+  /// 「先把畫面移到片段自己的時間，再跟遮罩串流 alphamerge」——遮罩串流
+  /// 是照輸出的每一格產的（片段時間），兩路時間對齊了才能逐格配對。
+  /// 挖好之後墊背景（純色／原畫面模糊，都在這一層自己的框裡），再接裁切、
+  /// 鏡像、旋轉、透明度、淡入淡出，跟預覽、原生合成器同一個順序
+  void writeCutoutVideoLayer(TimelineClip c, int k, int mi) {
+    final src = spec.sources[c.sourceIndex];
+    final label = vPool[c.sourceIndex]!.removeLast();
+    final start = c.offset / sp;
+    final end = c.end / sp;
+    final (a, b) = visible(start, end)!;
+    final rate = sp * c.speed.clamp(0.1, 16.0);
+    final (srcA, srcB) = videoSourceRange(c);
+    final (w2, h2, x, y) = layerBox(c, src.aspect);
+    final (cropF, cdx, cdy, cw, ch) = cropOf(c, w2, h2);
+    final (spinF, sdx, sdy) = spinFadeOf(c, cw, ch);
+    final large = c.scale > 3
+        ? LargeMediaTransform(src, c, spec.outW, spec.outH)
+        : null;
+    // 挖背景的那張畫面多大：一般是圖層大小；放超大的那條先縮到它的
+    // 取樣畫布（LargeMediaTransform 自己的 scale 就變成原地不動）
+    final rw = large?.rasterW ?? w2;
+    final rh = large?.rasterH ?? h2;
+    final cut = c.cutout!;
+    final shift = _f(a - start);
+    fc.write(
+      '[$label]'
+      'trim=start=${_f(srcA - (inputSeeks[c.sourceIndex] ?? 0))}'
+      ':end=${_f(srcB - (inputSeeks[c.sourceIndex] ?? 0))},'
+      '${hdrTrcOf(c.sourceIndex, rh)}'
+      'scale=$rw:$rh:flags=lanczos'
+      '${_eq(c)},'
+      '${c.reverse ? 'reverse,' : ''}'
+      'setpts=(PTS-STARTPTS)/${_f6(rate)}+$shift/TB,'
+      'format=yuva420p[cv$k];',
+    );
+    // 遮罩：原始檔的時間從 0 起，移到跟畫面同一個片段時間
+    fc.write(
+      '[$mi:v]setpts=PTS-STARTPTS+$shift/TB,'
+      'scale=$rw:$rh:flags=bilinear,format=gray[cm$k];',
+    );
+    var fg = 'ca$k';
+    switch (cut.bg) {
+      case CutoutBg.none:
+        fc.write('[cv$k][cm$k]alphamerge[ca$k];');
+      case CutoutBg.color:
+        final rgb = (cut.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
+        fc.write(
+          '[cv$k][cm$k]alphamerge,split[cf$k][cg$k];'
+          '[cg$k]drawbox=x=0:y=0:w=iw:h=ih:color=0x$rgb@1.0:t=fill:'
+          'replace=1[cb$k];'
+          '[cb$k][cf$k]overlay=format=auto[cc$k];',
+        );
+        fg = 'cc$k';
+      case CutoutBg.blur:
+        // 長邊的 2%（同預覽、原生合成器）
+        final sigma = math.max(rw, rh) * 0.02;
+        fc.write(
+          '[cv$k]split[cva$k][cvb$k];'
+          '[cvb$k]gblur=sigma=${_f(sigma)}[cbl$k];'
+          '[cva$k][cm$k]alphamerge[cfg$k];'
+          '[cbl$k][cfg$k]overlay=format=auto[cc$k];',
+        );
+        fg = 'cc$k';
+    }
+    fc.write(
+      '[$fg]'
+      '${large?.filter ?? '$cropF${c.mirror ? 'hflip,' : ''}format=rgba,$spinF'}'
+      'null'
+      '${vFades(c)}'
+      ',setpts=PTS-STARTPTS+${_f(a - w0)}/TB'
+      '[lv$k];',
+    );
+    fc.write(
+      '[$cur][lv$k]overlay=${large != null ? 0 : x + cdx + sdx}:${large != null ? 0 : y + cdy + sdy}:'
+      'enable=${_window(a - w0, b - w0)}:'
       'eof_action=repeat[ov$k];',
     );
   }
@@ -1216,7 +1331,12 @@ Future<List<String>> _buildCommand(
         writeMosaicLayer(c, k);
       }
     } else if (spec.sources[c.sourceIndex].isVideo) {
-      writeVideoLayer(c, k);
+      final mi = cutInput[c.id];
+      if (mi != null && c.cutout != null) {
+        writeCutoutVideoLayer(c, k, mi);
+      } else {
+        writeVideoLayer(c, k);
+      }
       cur = 'ov$k';
     } else {
       writeStillLayer(c, k);
@@ -1390,6 +1510,23 @@ Future<List<String>> _buildCommand(
     if (maskInput.containsKey(c.id)) {
       cmd.addAll(['-f', 'image2', '-i', maskFiles[c.id]!]);
     }
+  }
+  // 去背的遮罩串流：gray 原始檔、每一格輸出畫面一張（順序同 cutInput）
+  for (final c in segClips) {
+    final r = cutoutRaws[c.id];
+    if (r == null || !cutInput.containsKey(c.id)) continue;
+    cmd.addAll([
+      '-f',
+      'rawvideo',
+      '-pix_fmt',
+      'gray',
+      '-s',
+      '${r.$2}x${r.$3}',
+      '-framerate',
+      fps.toStringAsFixed(3),
+      '-i',
+      r.$1,
+    ]);
   }
   if (hasWm) cmd.addAll(['-i', wmPath]);
   cmd.addAll(['-filter_complex', filter, '-map', '[$cur]']);
@@ -1684,6 +1821,13 @@ List<double> _segmentBounds(ExportSpec spec) {
     marks
       ..add(c.offset / sp)
       ..add(c.end / sp);
+    // 去背的片段每 15 秒切一刀：遮罩串流是每一格一張的原始檔（見
+    // _buildCommand），一段太長暫存檔就大（256×256 一秒 30 格約 2MB）
+    if (cutoutActive(c, spec.sources[c.sourceIndex])) {
+      for (var t = c.offset / sp + 15; t < c.end / sp - 1; t += 15) {
+        marks.add(t);
+      }
+    }
   }
   if (spec.watermarkPng != null) {
     marks
@@ -1878,6 +2022,7 @@ Future<String> debugBuildCommand(
   String? wmPath,
   Map<int, String> overlayFiles = const {},
   Map<int, String> maskFiles = const {},
+  List<String>? tempFiles,
   double winStart = 0,
   double? winEnd,
   bool videoOnly = false,
@@ -1888,6 +2033,7 @@ Future<String> debugBuildCommand(
     overlayFiles,
     outPath,
     maskFiles: maskFiles,
+    tempFiles: tempFiles,
     winStart: winStart,
     winEnd: winEnd,
     videoOnly: videoOnly,
@@ -1924,6 +2070,7 @@ Future<List<String>> debugBuildArguments(
   String? wmPath,
   Map<int, String> overlayFiles = const {},
   Map<int, String> maskFiles = const {},
+  List<String>? tempFiles,
   double winStart = 0,
   double? winEnd,
   bool videoOnly = false,
@@ -1934,6 +2081,7 @@ Future<List<String>> debugBuildArguments(
   overlayFiles,
   outPath,
   maskFiles: maskFiles,
+  tempFiles: tempFiles,
   winStart: winStart,
   winEnd: winEnd,
   videoOnly: videoOnly,
@@ -2057,6 +2205,10 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         }
         return (ok: false, message: '倒轉處理失敗，請再試一次', cancelled: false);
       }
+      // 去背：倒好的暫存檔第 u 秒＝原檔的 trimEnd − u 秒，用倒轉檔那套
+      // 對照（revOf/revEnd）沿用原檔的遮罩。來源本身已經是倒轉檔的
+      // （倒了再倒）對照不是這個形狀，這種罕見情況就不去背
+      final keepCut = !isAudio && src.revOf == null && src.cutMask != null;
       sources.add(
         MediaSource(
           path: made,
@@ -2065,6 +2217,10 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
           duration: c.trimEnd - c.trimStart,
           w: isAudio ? 0 : spec.outW,
           h: isAudio ? 0 : spec.outH,
+          revOf: keepCut ? src.path : null,
+          revStart: keepCut ? c.trimStart : 0,
+          revEnd: keepCut ? c.trimEnd : 0,
+          cutMask: keepCut ? src.cutMask : null,
         ),
       );
       // 改指到倒好的暫存檔，並把 reverse 關掉（主濾鏡不用再倒一次）。
@@ -2373,6 +2529,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         overlayFiles,
         outPath,
         maskFiles: maskFiles,
+        tempFiles: segTemps,
       ),
     );
     ok = r.ok;
@@ -2390,6 +2547,7 @@ Future<({bool ok, String message, bool cancelled})> exportVideoToGallery(
         overlayFiles,
         segPath,
         maskFiles: maskFiles,
+        tempFiles: segTemps,
         winStart: bounds[i],
         winEnd: bounds[i + 1],
         videoOnly: true,

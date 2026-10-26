@@ -278,7 +278,7 @@ List<String> draftRefsOf(Map<dynamic, dynamic> j) {
   final out = <String>{};
   for (final s in (j['sources'] as List? ?? const [])) {
     if (s is! Map) continue;
-    for (final k in const ['path', 'workPath', 'workHdr', 'revOf']) {
+    for (final k in const ['path', 'workPath', 'workHdr', 'revOf', 'cutMask']) {
       final v = s[k];
       if (v is String && v.isNotEmpty) out.add(v);
     }

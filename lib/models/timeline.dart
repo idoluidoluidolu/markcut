@@ -1,9 +1,11 @@
 import 'dart:math' as math;
 
 import 'color_grade.dart';
+import 'cutout.dart';
 import 'mosaic.dart';
 import 'watermark_settings.dart';
 
+export 'cutout.dart';
 export 'mosaic.dart';
 
 /// 片段（與浮水印範圍）修剪得到的最短長度，單位秒。
@@ -104,6 +106,11 @@ class MediaSource {
   /// 預覽／抽幀要用的路徑
   String get previewPath => workPath ?? path;
 
+  /// 去背遮罩檔（.mcmk，見 services/cutout_mask.dart）：整支影片每一格
+  /// 人像的遮罩，時間是原檔的素材秒數。null＝還沒算（或沒開過去背）。
+  /// 倒轉檔沿用原檔那一份（時間換算見 models/cutout.dart）
+  String? cutMask;
+
   /// 這份素材是「倒轉版」時，記下它是從哪個原始檔的哪一段做出來的。
   /// 使用者把速度拉回正的時，靠這些資訊還原回原始素材
   final String? revOf;
@@ -135,6 +142,7 @@ class MediaSource {
     this.revColorVersion = 0,
     this.isSticker = false,
     this.isGif = false,
+    this.cutMask,
   });
 
   bool get isVideo => kind == ClipKind.video;
@@ -163,6 +171,7 @@ class MediaSource {
     revStart: revStart,
     revEnd: revEnd,
     revColorVersion: revColorVersion,
+    cutMask: cutMask,
   );
 
   /// 樣式素材（浮水印/文字/馬賽克）切割時要複製一份來源，
@@ -219,6 +228,7 @@ class MediaSource {
     if (revOf != null) 'revStart': revStart,
     if (revOf != null) 'revEnd': revEnd,
     if (revOf != null) 'revColorVersion': revColorVersion,
+    if (cutMask != null) 'cutMask': cutMask,
   };
 
   factory MediaSource.fromJson(Map<String, dynamic> j) {
@@ -276,6 +286,9 @@ class MediaSource {
       revStart: (j['revStart'] ?? 0).toDouble(),
       revEnd: (j['revEnd'] ?? 0).toDouble(),
       revColorVersion: (j['revColorVersion'] as num?)?.toInt() ?? 0,
+      cutMask: j['cutMask'] is String && (j['cutMask'] as String).isNotEmpty
+          ? j['cutMask'] as String
+          : null,
     );
   }
 }
@@ -341,6 +354,10 @@ class TimelineClip {
   bool get cropped =>
       cropL > 0.001 || cropT > 0.001 || cropW < 0.999 || cropH < 0.999;
 
+  /// 去背（只有影片片段用）：null＝沒開。遮罩在素材上（MediaSource.cutMask），
+  /// 遮罩還沒算好的時候照舊整張畫
+  ClipCutout? cutout;
+
   TimelineClip({
     required this.id,
     required this.sourceIndex,
@@ -364,6 +381,7 @@ class TimelineClip {
     this.cropH = 1,
     this.opacity = 1.0,
     this.rotation = 0,
+    this.cutout,
   }) : color = color ?? ColorGrade();
 
   /// 素材端長度（trim 掉頭尾後的原始秒數）
@@ -408,6 +426,7 @@ class TimelineClip {
     cropH: cropH,
     opacity: opacity,
     rotation: rotation,
+    cutout: cutout?.copy(),
   );
 
   /// 頭尾都含的覆蓋判定：播到最後停在總長那一點時，[covers] 對每個片段
@@ -484,6 +503,7 @@ class TimelineClip {
     if (cropped) 'crop': [cropL, cropT, cropW, cropH],
     if (faded) 'opacity': opacity,
     if (rotated) 'rotation': rotation,
+    if (cutout != null) 'cut': cutout!.toJson(),
     // 調色的鍵維持扁平，舊草稿讀得回來
     ...color.toJson(),
   };
@@ -516,6 +536,7 @@ class TimelineClip {
     cropW: _crop(j, 2, 1),
     cropH: _crop(j, 3, 1),
     color: ColorGrade.fromJson(j),
+    cutout: ClipCutout.fromJson(j['cut']),
   );
 
   TimelineClip copy() => TimelineClip.fromJson(toJson());

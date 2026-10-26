@@ -278,6 +278,9 @@ class MainActivity : FlutterActivity() {
         registerDiagChannel(flutterEngine)
         registerPickChannel(flutterEngine)
         registerFaceChannel(flutterEngine)
+        // 去背（markcut/cutout）：影片遮罩跟工作檔轉檔一樣，使用者在滑動、
+        // 播放時放慢讓路
+        CutoutChannel(mainHandler) { previewWorkGate.interactive }.register(flutterEngine)
         // cacheDir/picked 每挑一次就多一份複本（同名不覆蓋、從沒人清）：
         // 啟動時在背景掃掉七天以前的。草稿要留的素材 Dart 端會複製進
         // 自己的目錄，這裡的只是匯入時的中繼複本

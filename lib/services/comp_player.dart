@@ -723,6 +723,8 @@ class CompPlayer {
           if (c.cropped) 'crop': [c.cropL, c.cropT, c.cropW, c.cropH],
           'rotation': c.rotation,
           'opacity': c.opacity,
+          // 去背：原生 CI 合成器照遮罩挖背景（跟匯出同一套欄位）
+          'cutout': ?cutoutPayload(c, tl.sourceOf(c)),
         },
     ];
     // 馬賽克：跟原生匯出同一套欄位（見 native_export 的 mosaics），

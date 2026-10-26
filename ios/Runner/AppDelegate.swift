@@ -1,4 +1,5 @@
 import AVFoundation
+import Compression
 import MetalKit
 import MetricKit
 import CoreImage
@@ -910,6 +911,10 @@ final class CILayerSpec {
   let uPx: Double
   let uPy: Double
 
+  /// 去背（只有影片層）：來源格先照遮罩挖掉背景、換上指定的背景，
+  /// 再走後面的變形／裁切／透明度。nil＝沒開
+  let cutout: MCCutoutSpec?
+
   init(
     trackID: CMPersistentTrackID, still: CIImage?,
     transform: CGAffineTransform, srcHeight: CGFloat,
@@ -918,8 +923,10 @@ final class CILayerSpec {
     crop: CGRect? = nil, rotation: Double = 0, opacity: Double = 1,
     z: Int = 0, gif: CIGifSpec? = nil,
     uScale: Double = 1, uPx: Double = 0.5, uPy: Double = 0.5,
-    srcWidth: CGFloat = 0, sourceOpaque: Bool = false, imageClipID: Int? = nil
+    srcWidth: CGFloat = 0, sourceOpaque: Bool = false, imageClipID: Int? = nil,
+    cutout: MCCutoutSpec? = nil
   ) {
+    self.cutout = cutout
     self.trackID = trackID
     self.still = still
     self.imageClipID = imageClipID
@@ -948,7 +955,7 @@ final class CILayerSpec {
       fadeOut: fadeOut, colorMatrix: colorMatrix, crop: crop,
       rotation: rotation, opacity: opacity, z: z, gif: gif,
       uScale: uScale, uPx: uPx, uPy: uPy, srcWidth: srcWidth,
-      sourceOpaque: sourceOpaque, imageClipID: imageClipID)
+      sourceOpaque: sourceOpaque, imageClipID: imageClipID, cutout: cutout)
   }
 
   func isImagePresent(in activeIDs: Set<Int>?) -> Bool {
@@ -989,6 +996,7 @@ enum MCPreviewVisibility {
   static func coversCanvas(_ layer: CILayerSpec, canvas: CGSize) -> Bool {
     guard layer.trackID != kCMPersistentTrackID_Invalid,
       layer.still == nil, layer.gif == nil, layer.sourceOpaque,
+      layer.cutout == nil || layer.cutout?.bg != 0,
       layer.opacity == 1, layer.fadeIn == 0, layer.fadeOut == 0,
       layer.crop == nil, layer.rotation == 0, layer.colorMatrix == nil,
       layer.srcWidth > 1, layer.srcHeight > 1,
@@ -2671,6 +2679,10 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             Self.skip("效果")
             return nil
           }
+          guard L.cutout == nil else {
+            Self.skip("去背")
+            return nil
+          }
           guard L.fadeIn < 0.01 || t0 >= L.start + L.fadeIn,
             L.fadeOut < 0.01 || t0 <= L.end - L.fadeOut
           else {
@@ -2809,9 +2821,15 @@ class CIExportCompositor: NSObject, AVVideoCompositing {
             // 跟內建合成器同一套曲線。SDR 來源開著沒有影響
             // SDR 輸出＝系統色調映射（跟相簿同一條曲線）；
             // HDR 輸出＝不映射，HDR 像素原封進 HLG 管線
-            let base = CIImage(
+            var base = CIImage(
               cvPixelBuffer: buf,
               options: [.toneMapHDRtoSDR: !self.hdrOut])
+            // 去背：在來源格上照遮罩挖掉背景（換上背景），後面的變形、
+            // 裁切、旋轉、透明度全部照舊作用在挖好的這一張上——跟
+            // Flutter 預覽、FFmpeg 匯出同一個順序
+            if let cut = layer.cutout {
+              base = cut.apply(to: base, at: t, hdr: self.hdrOut)
+            }
             // 變形是「左上原點、y 往下」的 AVFoundation 座標，Core Image
             // 是「左下原點、y 往上」：先把來源翻成 y 往下、套變形、再翻回
             let flipSrc = CGAffineTransform(
@@ -4484,6 +4502,7 @@ final class MCInteractivePrepGate {
     registerPhotoSaveChannel(engineBridge)
     registerPickChannel(engineBridge)
     registerFaceChannel(engineBridge)
+    registerCutoutChannel(engineBridge)
 
     // 拖曳預覽的按需抽幀通道。重用 AVAssetImageGenerator，實際取樣時間
     // 由 actualTime 回報；JPEG 粗覽是 tone-map 後的 SDR，不是完整 HDR 顯示。
@@ -5737,7 +5756,8 @@ final class MCInteractivePrepGate {
         range: CMTimeRange, transform: CGAffineTransform, size: CGSize,
         fadeIn: Double, fadeOut: Double, userScale: Double, px: Double,
         py: Double, mirror: Bool, trackID: CMPersistentTrackID, z: Int,
-        color: [Double]?, crop: [Double]?, rotation: Double, opacity: Double
+        color: [Double]?, crop: [Double]?, rotation: Double, opacity: Double,
+        cutout: MCCutoutSpec?
       )] = []
 
     for clip in clips {
@@ -5759,6 +5779,7 @@ final class MCInteractivePrepGate {
       let cropArr = clip["crop"] as? [Double]
       let rotation = clip["rotation"] as? Double ?? 0
       let opacity = clip["opacity"] as? Double ?? 1
+      let cutArgs = clip["cutout"] as? [String: Any]
       if end - start <= 0.01 { continue }
 
       if layered {
@@ -5833,7 +5854,14 @@ final class MCInteractivePrepGate {
         transform: src.preferredTransform, size: src.naturalSize,
         fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
         py: py, mirror: mirror, trackID: destTrack.trackID, z: zTrack,
-        color: colorM, crop: cropArr, rotation: rotation, opacity: opacity
+        color: colorM, crop: cropArr, rotation: rotation, opacity: opacity,
+        // 去背只有圖層模式（CI 合成器）做得到：Dart 端有去背就一定送
+        // layered，這裡沒開圖層模式就當沒有
+        cutout: layered ? cutArgs.flatMap {
+          MCCutoutSpec(args: $0, start: cursor.seconds,
+            rate: range.duration.seconds / max(0.000_001, outDur.seconds),
+            orient: src.preferredTransform)
+        } : nil
       ))
       cursor = cursor + outDur
     }
@@ -5944,6 +5972,8 @@ final class MCInteractivePrepGate {
             preferredTimescale: scale))
         segments[i].fadeIn /= globalSpeed
         segments[i].fadeOut /= globalSpeed
+        // 去背的遮罩時間對照：開頭跟著除、每秒走的素材秒數跟著乘
+        segments[i].cutout = segments[i].cutout?.rescaled(by: globalSpeed)
       }
     }
     let total = comp.duration.seconds
@@ -6055,7 +6085,7 @@ final class MCInteractivePrepGate {
             end: seg.range.end.seconds, fadeIn: seg.fadeIn,
             fadeOut: seg.fadeOut, colorMatrix: seg.color,
             crop: cropRect, rotation: seg.rotation, opacity: seg.opacity,
-            z: seg.z)
+            z: seg.z, cutout: seg.cutout)
         ))
         continue
       }
@@ -8579,6 +8609,7 @@ private struct CompSeg {
   var rotation: Double
   var opacity: Double
   var sourceOpaque: Bool
+  var cutout: MCCutoutSpec? = nil
 }
 
 /// 浮水印部件的即時幾何覆寫（拖曳/縮放/旋轉），絕對值：
@@ -9625,6 +9656,8 @@ final class CompPlayer: NSObject, FlutterTexture {
         (c["crop"] as? [Double]) != nil
           || abs(c["rotation"] as? Double ?? 0) > 0.05
           || (c["opacity"] as? Double ?? 1) < 0.999
+          // 去背只有 CI 合成器挖得了
+          || c["cutout"] != nil
       }
     // 寫進組建內視鏡：下次「進場顏色白白的」的回報，一眼就能看出
     // HDR 判定有沒有中、CI 有沒有掛（上一輪就是缺這格查了半天）
@@ -9655,6 +9688,8 @@ final class CompPlayer: NSObject, FlutterTexture {
       let cropArr = clip["crop"] as? [Double]
       let rotation = clip["rotation"] as? Double ?? 0
       let opacity = clip["opacity"] as? Double ?? 1
+      // 去背：遮罩檔＋片段開頭的遮罩秒數（見 MCCutoutSpec）
+      let cutArgs = clip["cutout"] as? [String: Any]
       if end - start <= 0.01 { continue }
 
       let asset: AVURLAsset
@@ -9769,7 +9804,14 @@ final class CompPlayer: NSObject, FlutterTexture {
           fadeIn: fadeIn, fadeOut: fadeOut, clipID: clip["id"] as? Int ?? -1)
       }
 
+      // 去背的片段挖掉背景之後就不是不透明的了（背景換成純色／模糊
+      // 才又蓋滿自己的框）：遮蔽剔除不能把它下面的層拿掉
+      let cut = cutArgs.flatMap {
+        MCCutoutSpec(args: $0, start: putAt.seconds,
+          rate: speed, orient: src.preferredTransform)
+      }
       let sourceOpaque = MCPreviewVisibility.sourceIsOpaque(src)
+        && (cut == nil || cut?.bg != 0)
       opaqueByPath[path] = (opaqueByPath[path] ?? true) && sourceOpaque
       segments.append(
         CompSeg(
@@ -9778,7 +9820,7 @@ final class CompPlayer: NSObject, FlutterTexture {
           fadeIn: fadeIn, fadeOut: fadeOut, userScale: userScale, px: px,
           py: py, mirror: mirror, track: slot.track, layer: layer,
           crop: cropArr, rotation: rotation, opacity: opacity,
-          sourceOpaque: sourceOpaque))
+          sourceOpaque: sourceOpaque, cutout: cut))
     }
     if segments.isEmpty {
       buildError = "沒有一段畫面接得進去"
@@ -10345,7 +10387,8 @@ final class CompPlayer: NSObject, FlutterTexture {
                 opacity: seg.opacity, z: seg.layer,
                 // 即時變形的差量基準（見 CILayerSpec.uScale）
                 uScale: seg.userScale, uPx: seg.px, uPy: seg.py,
-                srcWidth: seg.size.width, sourceOpaque: seg.sourceOpaque)
+                srcWidth: seg.size.width, sourceOpaque: seg.sourceOpaque,
+                cutout: seg.cutout)
             ))
           }
           for sp in stillSpecs
@@ -15266,6 +15309,826 @@ enum MCFaceDetect {
     case (0, -1, 1, 0): return .left
     case (-1, 0, 0, -1): return .down
     default: return .up
+    }
+  }
+}
+
+// ===== 去背（markcut/cutout）==========================================
+//
+// 通道 "markcut/cutout"（Dart 端見 lib/services/cutout_detect.dart）：
+//   analyzePhoto({path, maxSide, previewSide})
+//     -> {w, h, fullW, fullH, kind, mask, labels?, lw, lh, subjects}?
+//     照片找主體。iOS 17 起是 Vision 的主體遮罩（人、寵物、物品都行，跟
+//     相簿「長按拎起主體」同一類）；之前退回人像分割（kind = "person"）。
+//     mask＝全部主體的遮罩（w×h 位元組，長邊縮到 previewSide 內）；
+//     labels＝每個像素屬於第幾個主體（Vision 的低解析標籤圖，lw×lh）。
+//     檔案讀不到回 nil
+//   photoMask({path, ids, maxSide}) -> {w, h, mask}：只留 ids 這幾個主體
+//   videoMask({path, out, token}) -> {frames, w, h}：整支影片每一格的人像
+//     遮罩寫成 .mcmk（格式見 lib/services/cutout_mask.dart）；過程中送
+//     cutoutProgress({token, p})
+//   cancel({token})：叫正在算的那一支停下來
+
+extension AppDelegate {
+  fileprivate static let cutoutQueue = DispatchQueue(
+    label: "markcut.cutout", qos: .userInitiated)
+  /// 影片遮罩是長工作：排在自己的佇列、優先權放低，滑動與播放優先
+  fileprivate static let cutoutVideoQueue = DispatchQueue(
+    label: "markcut.cutout.video", qos: .utility)
+  fileprivate static var cutoutChannel: FlutterMethodChannel?
+  fileprivate static let cutoutLock = NSLock()
+  fileprivate static var cutoutFlags: [Int: AtomicFlag] = [:]
+
+  /// 這個 token 的取消旗標（取消可能比開工早到，所以兩邊都用這個拿）
+  fileprivate static func cutoutFlag(_ token: Int) -> AtomicFlag {
+    cutoutLock.lock()
+    defer { cutoutLock.unlock() }
+    if let f = cutoutFlags[token] { return f }
+    let f = AtomicFlag()
+    cutoutFlags[token] = f
+    return f
+  }
+
+  fileprivate static func cutoutDone(_ token: Int) {
+    cutoutLock.lock()
+    defer { cutoutLock.unlock() }
+    cutoutFlags[token] = nil
+  }
+
+  private func registerCutoutChannel(_ engineBridge: FlutterImplicitEngineBridge) {
+    guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "markcut.cutout")
+    else { return }
+    let channel = FlutterMethodChannel(
+      name: "markcut/cutout", binaryMessenger: registrar.messenger())
+    AppDelegate.cutoutChannel = channel
+    // 影片遮罩跟轉檔走同一道讓路閘：使用者在滑動、播放時放慢或停下來
+    let gate = prepInteractiveGate
+    channel.setMethodCallHandler { call, result in
+      let args = call.arguments as? [String: Any] ?? [:]
+      func reply(_ r: Result<[String: Any]?, Error>) {
+        DispatchQueue.main.async {
+          switch r {
+          case .success(let m): result(m)
+          case .failure(let e):
+            result(FlutterError(code: "cutout_failed", message: "\(e)", details: nil))
+          }
+        }
+      }
+      switch call.method {
+      case "analyzePhoto":
+        guard let path = args["path"] as? String, !path.isEmpty else {
+          result(nil)
+          return
+        }
+        let maxSide = args["maxSide"] as? Int ?? 4096
+        let previewSide = args["previewSide"] as? Int ?? 1600
+        AppDelegate.cutoutQueue.async {
+          let r: Result<[String: Any]?, Error> = autoreleasepool {
+            Result {
+              try MCCutout.analyzePhoto(
+                path: path, maxSide: maxSide, previewSide: previewSide)
+            }
+          }
+          reply(r)
+        }
+      case "photoMask":
+        guard let path = args["path"] as? String, !path.isEmpty else {
+          result(nil)
+          return
+        }
+        let ids = (args["ids"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }
+        let maxSide = args["maxSide"] as? Int ?? 4096
+        AppDelegate.cutoutQueue.async {
+          let r: Result<[String: Any]?, Error> = autoreleasepool {
+            Result { try MCCutout.photoMask(path: path, ids: ids, maxSide: maxSide) }
+          }
+          reply(r)
+        }
+      case "videoMask":
+        guard let path = args["path"] as? String, !path.isEmpty,
+          let out = args["out"] as? String, !out.isEmpty,
+          let token = args["token"] as? Int
+        else {
+          result(nil)
+          return
+        }
+        let flag = AppDelegate.cutoutFlag(token)
+        AppDelegate.cutoutVideoQueue.async {
+          var last = -1.0
+          let r: Result<[String: Any]?, Error> = Result {
+            try MCCutout.videoMask(
+              path: path, out: out, cancelled: flag, gate: gate,
+              progress: { p in
+                // 每 1% 送一次就夠，送太密只是把主執行緒塞滿
+                if p - last < 0.01 && p < 1 { return }
+                last = p
+                DispatchQueue.main.async {
+                  AppDelegate.cutoutChannel?.invokeMethod(
+                    "cutoutProgress", arguments: ["token": token, "p": p])
+                }
+              })
+          }
+          AppDelegate.cutoutDone(token)
+          reply(r)
+        }
+      case "cancel":
+        if let token = args["token"] as? Int {
+          AppDelegate.cutoutFlag(token).set()
+        }
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+}
+
+enum MCCutout {
+  struct Failure: Error, CustomStringConvertible {
+    let description: String
+    init(_ s: String) { description = s }
+  }
+
+  /// 遮罩用的 CI：不做色彩管理（遮罩是數值，不是顏色）
+  static let maskContext = CIContext(options: [
+    .workingColorSpace: NSNull(), .outputColorSpace: NSNull(),
+  ])
+  /// 影片格轉正縮小用：照一般色彩管理（Vision 看的是人眼看到的畫面）
+  static let frameContext = CIContext()
+
+  // 最近一次分析的那張照片：點主體切換、匯出要原尺寸遮罩都接著用，
+  // 不用重算。只留一張（裡面抱著原尺寸的照片，很大）
+  private static let cacheLock = NSLock()
+  private static var cachePath: String?
+  private static var cacheSize = CGSize.zero
+  private static var cacheHandler: VNImageRequestHandler?
+  private static var cacheObservation: AnyObject?
+  private static var cachePersonMask: CIImage?
+
+  private static func store(
+    path: String, size: CGSize, handler: VNImageRequestHandler,
+    observation: AnyObject?, person: CIImage?
+  ) {
+    cacheLock.lock()
+    defer { cacheLock.unlock() }
+    cachePath = path
+    cacheSize = size
+    cacheHandler = handler
+    cacheObservation = observation
+    cachePersonMask = person
+  }
+
+  /// 等比縮到長邊不超過 [maxSide]（不放大）
+  static func fit(_ s: CGSize, _ maxSide: Int) -> (Int, Int) {
+    let long = max(s.width, s.height)
+    let k = long > CGFloat(maxSide) ? CGFloat(maxSide) / long : 1
+    return (
+      max(1, Int((s.width * k).rounded())), max(1, Int((s.height * k).rounded()))
+    )
+  }
+
+  /// 照片轉正、長邊不超過 [maxSide]（Dart 端解出來的照片也是轉正的，
+  /// 0~1 座標才對得上）
+  static func loadUpright(path: String, maxSide: Int) -> CGImage? {
+    let url = URL(fileURLWithPath: path)
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+    let opts: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceThumbnailMaxPixelSize: max(64, maxSide),
+    ]
+    return CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
+  }
+
+  /// 任何一種遮罩影像 → [w]×[h] 的 8 位元灰階（0＝背景、255＝主體；
+  /// 第一列是畫面最上面）。先畫進 BGRA 再取紅色通道：單通道的遮罩在
+  /// CI 裡可能是灰階也可能只有紅色，紅色兩種情況都對
+  static func gray(_ img: CIImage, w: Int, h: Int) -> Data {
+    var out = Data(count: w * h)
+    let e = img.extent
+    guard w > 0, h > 0, e.width > 0, e.height > 0, !e.isInfinite else { return out }
+    let scaled = img
+      .transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY))
+      .transformed(
+        by: CGAffineTransform(scaleX: CGFloat(w) / e.width, y: CGFloat(h) / e.height))
+    var pb: CVPixelBuffer?
+    let attrs: [String: Any] = [
+      kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()
+    ]
+    CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pb)
+    guard let buf = pb else { return out }
+    maskContext.render(
+      scaled, to: buf, bounds: CGRect(x: 0, y: 0, width: w, height: h), colorSpace: nil)
+    CVPixelBufferLockBaseAddress(buf, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
+    guard let base = CVPixelBufferGetBaseAddress(buf) else { return out }
+    let row = CVPixelBufferGetBytesPerRow(buf)
+    let src = base.assumingMemoryBound(to: UInt8.self)
+    out.withUnsafeMutableBytes { d in
+      let dst = d.bindMemory(to: UInt8.self)
+      for y in 0..<h {
+        let r = y * row
+        for x in 0..<w {
+          dst[y * w + x] = src[r + x * 4 + 2]
+        }
+      }
+    }
+    return out
+  }
+
+  /// 8 位元單通道的 CVPixelBuffer 原樣拷出來（標籤圖不能內插）
+  static func copyPlane8(_ pb: CVPixelBuffer) -> (Data, Int, Int)? {
+    guard CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_OneComponent8
+    else { return nil }
+    CVPixelBufferLockBaseAddress(pb, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+    guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
+    let w = CVPixelBufferGetWidth(pb)
+    let h = CVPixelBufferGetHeight(pb)
+    let row = CVPixelBufferGetBytesPerRow(pb)
+    var out = Data(count: w * h)
+    out.withUnsafeMutableBytes { d in
+      guard let dst = d.baseAddress else { return }
+      for y in 0..<h {
+        memcpy(dst + y * w, base + y * row, w)
+      }
+    }
+    return (out, w, h)
+  }
+
+  /// 每個標籤的外框（0~1、左上原點）
+  static func boxes(labels: Data, w: Int, h: Int, ids: [Int]) -> [[String: Any]] {
+    var x0 = [Int](repeating: Int.max, count: 256)
+    var y0 = [Int](repeating: Int.max, count: 256)
+    var x1 = [Int](repeating: -1, count: 256)
+    var y1 = [Int](repeating: -1, count: 256)
+    labels.withUnsafeBytes { p in
+      let b = p.bindMemory(to: UInt8.self)
+      for y in 0..<h {
+        for x in 0..<w {
+          let v = Int(b[y * w + x])
+          if v == 0 { continue }
+          if x < x0[v] { x0[v] = x }
+          if x > x1[v] { x1[v] = x }
+          if y < y0[v] { y0[v] = y }
+          if y > y1[v] { y1[v] = y }
+        }
+      }
+    }
+    return ids.compactMap { id -> [String: Any]? in
+      guard id > 0, id < 256, x1[id] >= 0 else { return nil }
+      return [
+        "id": id,
+        "x": Double(x0[id]) / Double(w), "y": Double(y0[id]) / Double(h),
+        "w": Double(x1[id] - x0[id] + 1) / Double(w),
+        "h": Double(y1[id] - y0[id] + 1) / Double(h),
+      ]
+    }
+  }
+
+  /// 遮罩（≥128 算主體）的外框；整張都是背景回 nil
+  static func boxOf(mask: Data, w: Int, h: Int) -> [String: Any]? {
+    var labels = Data(count: w * h)
+    mask.withUnsafeBytes { s in
+      labels.withUnsafeMutableBytes { d in
+        let a = s.bindMemory(to: UInt8.self)
+        let b = d.bindMemory(to: UInt8.self)
+        for i in 0..<(w * h) { b[i] = a[i] >= 128 ? 1 : 0 }
+      }
+    }
+    return boxes(labels: labels, w: w, h: h, ids: [1]).first
+  }
+
+  static func analyzePhoto(path: String, maxSide: Int, previewSide: Int) throws -> [String: Any]? {
+    guard let cg = loadUpright(path: path, maxSide: maxSide) else { return nil }
+    let size = CGSize(width: cg.width, height: cg.height)
+    let (pw, ph) = fit(size, previewSide)
+    let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
+    var out: [String: Any] = [
+      "w": pw, "h": ph, "fullW": cg.width, "fullH": cg.height, "lw": 0, "lh": 0,
+    ]
+    if #available(iOS 17.0, *) {
+      let req = VNGenerateForegroundInstanceMaskRequest()
+      try handler.perform([req])
+      let obs = req.results?.first
+      store(path: path, size: size, handler: handler, observation: obs, person: nil)
+      out["kind"] = "subject"
+      guard let o = obs, !o.allInstances.isEmpty else {
+        out["mask"] = FlutterStandardTypedData(bytes: Data(count: pw * ph))
+        out["subjects"] = [[String: Any]]()
+        return out
+      }
+      let all = o.allInstances
+      let full = try o.generateScaledMaskForImage(forInstances: all, from: handler)
+      out["mask"] = FlutterStandardTypedData(
+        bytes: gray(CIImage(cvPixelBuffer: full), w: pw, h: ph))
+      if let plane = copyPlane8(o.instanceMask) {
+        let (labels, lw, lh) = plane
+        out["labels"] = FlutterStandardTypedData(bytes: labels)
+        out["lw"] = lw
+        out["lh"] = lh
+        out["subjects"] = boxes(labels: labels, w: lw, h: lh, ids: Array(all))
+      } else {
+        out["subjects"] = all.map { id -> [String: Any] in
+          ["id": id, "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0]
+        }
+      }
+      return out
+    }
+    // iOS 15、16：系統只有人像分割
+    let req = VNGeneratePersonSegmentationRequest()
+    req.qualityLevel = .accurate
+    req.outputPixelFormat = kCVPixelFormatType_OneComponent8
+    try handler.perform([req])
+    out["kind"] = "person"
+    guard let pb = req.results?.first?.pixelBuffer else {
+      store(path: path, size: size, handler: handler, observation: nil, person: nil)
+      out["mask"] = FlutterStandardTypedData(bytes: Data(count: pw * ph))
+      out["subjects"] = [[String: Any]]()
+      return out
+    }
+    let pm = CIImage(cvPixelBuffer: pb)
+    store(path: path, size: size, handler: handler, observation: nil, person: pm)
+    let mask = gray(pm, w: pw, h: ph)
+    out["mask"] = FlutterStandardTypedData(bytes: mask)
+    if var box = boxOf(mask: mask, w: pw, h: ph) {
+      box["id"] = 1
+      out["subjects"] = [box]
+    } else {
+      out["subjects"] = [[String: Any]]()
+    }
+    return out
+  }
+
+  static func photoMask(path: String, ids: [Int], maxSide: Int) throws -> [String: Any]? {
+    cacheLock.lock()
+    let hit = cachePath == path && cacheHandler != nil
+    cacheLock.unlock()
+    if !hit {
+      // 沒分析過（或被別張蓋掉了）：照這次要的大小重新分析一次
+      guard try analyzePhoto(path: path, maxSide: max(maxSide, 1024), previewSide: 64) != nil
+      else { return nil }
+    }
+    cacheLock.lock()
+    let handler = cacheHandler
+    let obs = cacheObservation
+    let person = cachePersonMask
+    let size = cacheSize
+    let same = cachePath == path
+    cacheLock.unlock()
+    guard same, let h = handler else { return nil }
+    let (w, hh) = fit(size, maxSide)
+    var mask = Data(count: w * hh)
+    if let person = person {
+      // 只認人的那條路只有一個主體：有選就是它
+      if !ids.isEmpty { mask = gray(person, w: w, h: hh) }
+    } else if #available(iOS 17.0, *), let o = obs as? VNInstanceMaskObservation {
+      var set = IndexSet()
+      for i in ids where o.allInstances.contains(i) { set.insert(i) }
+      if !set.isEmpty {
+        let pb = try o.generateScaledMaskForImage(forInstances: set, from: h)
+        mask = gray(CIImage(cvPixelBuffer: pb), w: w, h: hh)
+      }
+    }
+    return ["w": w, "h": hh, "mask": FlutterStandardTypedData(bytes: mask)]
+  }
+
+  static func makePool(_ w: Int, _ h: Int) -> CVPixelBufferPool? {
+    let attrs: [String: Any] = [
+      kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+      kCVPixelBufferWidthKey as String: w,
+      kCVPixelBufferHeightKey as String: h,
+      kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+    ]
+    var pool: CVPixelBufferPool?
+    CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
+    return pool
+  }
+
+  /// 整支影片每一格的人像遮罩 → .mcmk。
+  ///
+  /// AVAssetReader 順著硬體解碼（不 seek）；每一格先轉正、縮到長邊 960
+  /// 再交給 Vision（遮罩就是轉正後的方向，跟播放器、相簿看到的一樣）。
+  /// 人像分割是「有狀態」的請求：整支用同一個請求物件，前後格會互相
+  /// 參照、邊緣比較不會閃（WWDC21 10040）；等級用 Apple 建議給影片逐格的
+  /// balanced。30fps 以上的片子隔格算（遮罩查表取「不晚於這一刻的最後
+  /// 一格」，60fps 拿隔壁格的遮罩看不出差別）
+  static func videoMask(
+    path: String, out: String, cancelled: AtomicFlag, gate: MCInteractivePrepGate,
+    progress: (Double) -> Void
+  ) throws -> [String: Any] {
+    let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+    guard let track = asset.tracks(withMediaType: .video).first else {
+      throw Failure("開檔｜沒有影片軌")
+    }
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(
+      track: track,
+      outputSettings: [
+        kCVPixelBufferPixelFormatTypeKey as String:
+          kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+      ])
+    output.alwaysCopiesSampleData = false
+    guard reader.canAdd(output) else { throw Failure("開檔｜讀不了影片軌") }
+    reader.add(output)
+    guard reader.startReading() else {
+      throw Failure("開檔｜\(reader.error?.localizedDescription ?? "?")")
+    }
+    let orientation = MCFaceDetect.videoOrientation(track.preferredTransform)
+    let duration = max(0.001, asset.duration.seconds)
+    let request = VNGeneratePersonSegmentationRequest()
+    request.qualityLevel = .balanced
+    request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+    let sequence = VNSequenceRequestHandler()
+    var writer: MCCutoutMaskWriter?
+    var pool: CVPixelBufferPool?
+    var poolW = 0
+    var poolH = 0
+    var frames = 0
+    var failed = 0
+    var firstError: String?
+    var next = -Double.infinity
+    do {
+      while true {
+        if cancelled.isSet { throw Failure("已取消") }
+        // 使用者在滑動、播放：讓路（跟轉檔同一道閘）
+        if !gate.wait(cancelled: cancelled) { throw Failure("已取消") }
+        let more: Bool = try autoreleasepool {
+          guard let sb = output.copyNextSampleBuffer() else { return false }
+          let t = CMSampleBufferGetPresentationTimeStamp(sb).seconds
+          guard t.isFinite, t >= next, let pb = CMSampleBufferGetImageBuffer(sb) else {
+            return true
+          }
+          next = t + 1.0 / 30 - 0.5 / 60
+          let src = CIImage(cvPixelBuffer: pb).oriented(orientation)
+          let e = src.extent
+          let k = min(1, 960 / max(e.width, e.height))
+          let uw = max(2, Int((e.width * k).rounded()) & ~1)
+          let uh = max(2, Int((e.height * k).rounded()) & ~1)
+          if pool == nil || poolW != uw || poolH != uh {
+            pool = makePool(uw, uh)
+            poolW = uw
+            poolH = uh
+          }
+          var upright: CVPixelBuffer?
+          if let p = pool { CVPixelBufferPoolCreatePixelBuffer(nil, p, &upright) }
+          guard let up = upright else { throw Failure("轉正｜配不出畫面暫存") }
+          let img = src
+            .transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY))
+            .transformed(
+              by: CGAffineTransform(
+                scaleX: CGFloat(uw) / e.width, y: CGFloat(uh) / e.height))
+          frameContext.render(img, to: up)
+          do {
+            try sequence.perform([request], on: up, orientation: .up)
+          } catch {
+            failed += 1
+            if firstError == nil { firstError = "\(error)" }
+            return true
+          }
+          guard let mpb = request.results?.first?.pixelBuffer else {
+            failed += 1
+            return true
+          }
+          if writer == nil {
+            let (mw, mh) = fit(
+              CGSize(
+                width: CVPixelBufferGetWidth(mpb), height: CVPixelBufferGetHeight(mpb)),
+              640)
+            writer = try MCCutoutMaskWriter(path: out, width: mw, height: mh)
+          }
+          guard let w = writer else { return true }
+          try w.add(pts: t, mask: gray(CIImage(cvPixelBuffer: mpb), w: w.width, h: w.height))
+          frames += 1
+          progress(min(1, max(0, t / duration)))
+          return true
+        }
+        if !more { break }
+      }
+      if reader.status == .failed {
+        throw Failure("解碼｜\(reader.error?.localizedDescription ?? "?")")
+      }
+      guard let w = writer, frames > 0 else {
+        throw Failure("算遮罩｜一格都沒算出來（失敗 \(failed) 格：\(firstError ?? "?")）")
+      }
+      try w.finish()
+      progress(1)
+      return ["frames": frames, "w": w.width, "h": w.height]
+    } catch {
+      reader.cancelReading()
+      writer?.abort()
+      throw error
+    }
+  }
+}
+
+/// .mcmk 遮罩檔的寫入端（格式見 lib/services/cutout_mask.dart；Android
+/// 那份在 CutoutChannel.kt）
+final class MCCutoutMaskWriter {
+  let width: Int
+  let height: Int
+  private let path: String
+  private let handle: FileHandle
+  private var entries: [(pts: Double, at: UInt64, len: UInt32)] = []
+  private var scratch: [UInt8]
+
+  init(path: String, width: Int, height: Int) throws {
+    guard width > 0, height > 0, width < 65536, height < 65536 else {
+      throw MCCutout.Failure("寫檔｜遮罩尺寸不對 \(width)×\(height)")
+    }
+    try? FileManager.default.removeItem(atPath: path)
+    guard FileManager.default.createFile(atPath: path, contents: nil),
+      let h = FileHandle(forWritingAtPath: path)
+    else { throw MCCutout.Failure("寫檔｜開不了遮罩檔") }
+    self.path = path
+    self.width = width
+    self.height = height
+    handle = h
+    // 壓不小的格子 deflate 也只多幾個位元組
+    scratch = [UInt8](repeating: 0, count: width * height + 4096)
+    try handle.write(contentsOf: Data(count: 24))
+  }
+
+  func add(pts: Double, mask: Data) throws {
+    guard mask.count == width * height else {
+      throw MCCutout.Failure("寫檔｜遮罩大小不對")
+    }
+    let cap = scratch.count
+    let n: Int = mask.withUnsafeBytes { src in
+      scratch.withUnsafeMutableBufferPointer { dst in
+        guard let s = src.bindMemory(to: UInt8.self).baseAddress,
+          let d = dst.baseAddress
+        else { return 0 }
+        return compression_encode_buffer(d, cap, s, mask.count, nil, COMPRESSION_ZLIB)
+      }
+    }
+    guard n > 0 else { throw MCCutout.Failure("寫檔｜遮罩壓縮失敗") }
+    let at = try handle.offset()
+    try handle.write(contentsOf: Data(scratch[0..<n]))
+    entries.append((pts: pts, at: at, len: UInt32(n)))
+  }
+
+  func finish() throws {
+    let indexAt = try handle.offset()
+    var index = Data(capacity: entries.count * 24)
+    for e in entries {
+      index.mcAppendLE(e.pts.bitPattern)
+      index.mcAppendLE(e.at)
+      index.mcAppendLE(e.len)
+      index.mcAppendLE(UInt32(0))
+    }
+    try handle.write(contentsOf: index)
+    var header = Data([0x4D, 0x43, 0x4D, 0x4B])  // 'MCMK'
+    header.mcAppendLE(UInt16(1))
+    header.mcAppendLE(UInt16(0))
+    header.mcAppendLE(UInt16(width))
+    header.mcAppendLE(UInt16(height))
+    header.mcAppendLE(UInt32(entries.count))
+    header.mcAppendLE(indexAt)
+    try handle.seek(toOffset: 0)
+    try handle.write(contentsOf: header)
+    try handle.synchronize()
+    try handle.close()
+  }
+
+  /// 沒做完（失敗／取消）：殘檔刪掉
+  func abort() {
+    try? handle.close()
+    try? FileManager.default.removeItem(atPath: path)
+  }
+}
+
+extension Data {
+  /// 小端序接在後面（.mcmk 的數字一律小端序）
+  mutating func mcAppendLE<T: FixedWidthInteger>(_ v: T) {
+    var x = v.littleEndian
+    Swift.withUnsafeBytes(of: &x) { append(contentsOf: $0) }
+  }
+}
+
+/// .mcmk 遮罩檔的讀取端：合成器每一格要的那一張。同一個檔在預覽、
+/// 匯出的合成器之間共用一份（解好的幾格快取一起用）
+final class MCCutoutMask {
+  let width: Int
+  let height: Int
+  private let data: Data
+  private let pts: [Double]
+  private let offs: [Int]
+  private let lens: [Int]
+  private let lock = NSLock()
+  private var cache: [Int: CIImage] = [:]
+  private var order: [Int] = []
+
+  private static let sharedLock = NSLock()
+  private static var shared: [String: MCCutoutMask] = [:]
+
+  static func open(_ path: String) -> MCCutoutMask? {
+    sharedLock.lock()
+    defer { sharedLock.unlock() }
+    if let m = shared[path] { return m }
+    guard let m = MCCutoutMask(path: path) else { return nil }
+    // 只留最近幾個：專案換了素材，舊的就放掉
+    if shared.count >= 8 { shared.removeAll() }
+    shared[path] = m
+    return m
+  }
+
+  private init?(path: String) {
+    guard
+      let d = try? Data(contentsOf: URL(fileURLWithPath: path), options: .alwaysMapped),
+      d.count >= 24
+    else { return nil }
+    let s = d.startIndex
+    func le(_ o: Int, _ n: Int) -> UInt64 {
+      var v: UInt64 = 0
+      for i in 0..<n { v |= UInt64(d[s + o + i]) << UInt64(8 * i) }
+      return v
+    }
+    guard d[s] == 0x4D, d[s + 1] == 0x43, d[s + 2] == 0x4D, d[s + 3] == 0x4B,
+      le(4, 2) == 1
+    else { return nil }
+    let w = Int(le(8, 2))
+    let h = Int(le(10, 2))
+    let n = Int(le(12, 4))
+    let idx = Int(le(16, 8))
+    guard w > 0, h > 0, n > 0, idx >= 24, idx + n * 24 <= d.count else { return nil }
+    var pts = [Double]()
+    var offs = [Int]()
+    var lens = [Int]()
+    pts.reserveCapacity(n)
+    offs.reserveCapacity(n)
+    lens.reserveCapacity(n)
+    for i in 0..<n {
+      let o = idx + i * 24
+      let off = Int(le(o + 8, 8))
+      let len = Int(le(o + 16, 4))
+      guard off >= 24, off + len <= d.count else { return nil }
+      pts.append(Double(bitPattern: le(o, 8)))
+      offs.append(off)
+      lens.append(len)
+    }
+    data = d
+    width = w
+    height = h
+    self.pts = pts
+    self.offs = offs
+    self.lens = lens
+  }
+
+  /// [t]（遮罩秒數）那一刻要用哪一格：秒數不超過 t 的最後一格（播放器
+  /// 顯示的也是這一格），比第一格早就用第一格
+  func index(at t: Double) -> Int {
+    if pts.isEmpty { return -1 }
+    let q = t + 1e-4
+    if q < pts[0] { return 0 }
+    var lo = 0
+    var hi = pts.count - 1
+    while lo < hi {
+      let mid = (lo + hi + 1) >> 1
+      if pts[mid] <= q { lo = mid } else { hi = mid - 1 }
+    }
+    return lo
+  }
+
+  /// [t]（遮罩秒數）那一格的遮罩：extent 0,0,寬,高 的灰階 CIImage。
+  /// 解壓進單通道 CVPixelBuffer 再包成 CIImage——跟 Vision 吐出來的遮罩
+  /// 同一種東西，上下方向的慣例一定一致
+  func image(at t: Double) -> CIImage? {
+    let i = index(at: t)
+    guard i >= 0 else { return nil }
+    lock.lock()
+    defer { lock.unlock() }
+    if let hit = cache[i] { return hit }
+    let n = width * height
+    var raw = [UInt8](repeating: 0, count: n)
+    let off = offs[i]
+    let len = lens[i]
+    let got: Int = raw.withUnsafeMutableBufferPointer { dst in
+      data.withUnsafeBytes { src in
+        guard let d = dst.baseAddress,
+          let s = src.bindMemory(to: UInt8.self).baseAddress
+        else { return 0 }
+        return compression_decode_buffer(d, n, s + off, len, nil, COMPRESSION_ZLIB)
+      }
+    }
+    guard got == n else { return nil }
+    var pb: CVPixelBuffer?
+    let attrs: [String: Any] = [
+      kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()
+    ]
+    CVPixelBufferCreate(
+      nil, width, height, kCVPixelFormatType_OneComponent8, attrs as CFDictionary, &pb)
+    guard let buf = pb else { return nil }
+    CVPixelBufferLockBaseAddress(buf, [])
+    if let base = CVPixelBufferGetBaseAddress(buf) {
+      let row = CVPixelBufferGetBytesPerRow(buf)
+      raw.withUnsafeBytes { s in
+        guard let sp = s.baseAddress else { return }
+        for y in 0..<height {
+          memcpy(base + y * row, sp + y * width, width)
+        }
+      }
+    }
+    CVPixelBufferUnlockBaseAddress(buf, [])
+    let img = CIImage(cvPixelBuffer: buf)
+    cache[i] = img
+    order.append(i)
+    if order.count > 6 { cache[order.removeFirst()] = nil }
+    return img
+  }
+}
+
+/// 一個影片片段的去背：合成器每一格照遮罩挖掉背景、換上背景
+final class MCCutoutSpec {
+  let mask: MCCutoutMask
+  /// 這一段在合成時間軸上的開頭（秒）
+  let start: Double
+  /// 片段開頭那一格的遮罩秒數（Dart 端算好：倒轉檔要換回原檔的秒數）
+  let m0: Double
+  /// 每一秒合成時間走幾秒遮罩時間（含變速、倒轉的方向）
+  let rate: Double
+  /// 來源軌的旋轉旗標：遮罩是轉正後的畫面，來源格是旋轉前的
+  let orient: CGAffineTransform
+  /// 0 沒有背景（透出下面的層）／1 純色／2 原畫面模糊
+  let bg: Int
+  let color: CIColor
+
+  /// [rate]＝這一段每一秒合成時間走幾秒素材（正數）；方向在 args 的 dir
+  init?(args: [String: Any], start: Double, rate: Double, orient: CGAffineTransform) {
+    guard let path = args["mask"] as? String, let m = MCCutoutMask.open(path) else {
+      return nil
+    }
+    mask = m
+    self.start = start
+    m0 = args["m0"] as? Double ?? 0
+    let dir = (args["dir"] as? Int ?? 1) < 0 ? -1.0 : 1.0
+    self.rate = rate * dir
+    self.orient = orient
+    bg = args["bg"] as? Int ?? 0
+    let c = (args["color"] as? NSNumber)?.int64Value ?? 0xFFFF_FFFF
+    color = CIColor(
+      red: CGFloat((c >> 16) & 0xFF) / 255, green: CGFloat((c >> 8) & 0xFF) / 255,
+      blue: CGFloat(c & 0xFF) / 255)
+  }
+
+  private init(
+    mask: MCCutoutMask, start: Double, m0: Double, rate: Double,
+    orient: CGAffineTransform, bg: Int, color: CIColor
+  ) {
+    self.mask = mask
+    self.start = start
+    self.m0 = m0
+    self.rate = rate
+    self.orient = orient
+    self.bg = bg
+    self.color = color
+  }
+
+  /// 整條時間軸變速之後（匯出把合成時間除以 [g]）：這一段的開頭跟著除、
+  /// 每一秒合成時間走的遮罩秒數跟著乘
+  func rescaled(by g: Double) -> MCCutoutSpec {
+    MCCutoutSpec(
+      mask: mask, start: start / g, m0: m0, rate: rate * g, orient: orient, bg: bg,
+      color: color)
+  }
+
+  func maskTime(_ t: Double) -> Double { m0 + rate * (t - start) }
+
+  /// 來源格（CIImage(cvPixelBuffer:)，extent 0,0,寬,高）挖掉背景
+  func apply(to base: CIImage, at t: Double, hdr: Bool) -> CIImage {
+    guard let m = mask.image(at: maskTime(t)) else { return base }
+    let ext = base.extent
+    let W = ext.width
+    let H = ext.height
+    guard W > 1, H > 1, !ext.isInfinite else { return base }
+    // 遮罩（CI 座標，y 往上）→ 翻成 y 往下 → 拉到轉正後的畫面大小 →
+    // 反轉旋轉旗標回到來源格（AVFoundation 座標）→ 翻回 CI 座標
+    let up = CGRect(x: 0, y: 0, width: W, height: H).applying(orient)
+    let orientN = orient.concatenating(
+      CGAffineTransform(translationX: -up.minX, y: -up.minY))
+    let mw = CGFloat(mask.width)
+    let mh = CGFloat(mask.height)
+    let flipMask = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: mh)
+    let toUp = CGAffineTransform(scaleX: up.width / mw, y: up.height / mh)
+    let flipRaw = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: H)
+    let xf = flipMask.concatenating(toUp).concatenating(orientN.inverted())
+      .concatenating(flipRaw)
+    let mk = m.transformed(by: xf).clampedToExtent().cropped(to: ext)
+    let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: ext)
+    let fg = base.applyingFilter(
+      "CIBlendWithMask",
+      parameters: [kCIInputBackgroundImageKey: clear, kCIInputMaskImageKey: mk])
+    switch bg {
+    case 1:
+      return fg.composited(over: CIImage(color: color).cropped(to: ext))
+    case 2:
+      // 跟 Flutter 預覽、FFmpeg 同一個強度：長邊的 2%
+      let sigma = Double(max(W, H)) * 0.02
+      let blurred = base.clampedToExtent().applyingGaussianBlur(sigma: sigma)
+        .cropped(to: ext)
+      return fg.composited(over: blurred)
+    default:
+      return fg
     }
   }
 }

@@ -44,6 +44,11 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 去背的主體分割模型走 Google Play 服務：從 Play 商店裝的話安裝時就
+             一起下載，第一次去背不用等（側載的 APK 第一次用時才下載） -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="subject_segment" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

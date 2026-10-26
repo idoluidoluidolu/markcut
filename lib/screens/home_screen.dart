@@ -13,6 +13,7 @@ import '../widgets/spotlight_hint.dart';
 import '../theme.dart';
 import 'batch_watermark_screen.dart';
 import 'collage_screen.dart';
+import 'cutout_screen.dart';
 import 'gif_screen.dart';
 import 'photo_editor_screen.dart';
 import 'profile_screen.dart';
@@ -21,7 +22,7 @@ import 'video_editor_screen.dart';
 /// 首頁：整片留給 logo，功能全收在底部那顆「＋ 開始」（使用者指定
 /// 「首頁整個下方收掉，改成＋號叫出選單」，樣式從八種裡挑了滿版膠囊）。
 ///
-/// ＋叫出來的是一張底部面板，五列：浮水印／照片拼圖／GIF／馬賽克／剪輯，
+/// ＋叫出來的是一張底部面板，六列：浮水印／照片拼圖／GIF／馬賽克／去背／剪輯，
 /// 各帶一行說明，右邊不畫箭頭（使用者指定；原本只有浮水印那列有，一列有
 /// 三列沒有反而像壞掉）。第二層也是同一種面板，左上角一個返回——按下去
 /// 回第一層，不是把整個選單關掉（見 _showSheet 的 backValue 與
@@ -34,6 +35,8 @@ import 'video_editor_screen.dart';
 ///   馬賽克 → 照片／影片（使用者在畫布選的「甲」：第五列、排在 GIF 下面、
 ///          再一層選照片／影片）。照片進照片編輯器的馬賽克模式（進去自動
 ///          找臉、全碼上，點臉切換）；影片進剪輯，接好就跳馬賽克選單
+///   去背 → 照片／影片（照馬賽克的入口）。照片進去背頁（自動找主體、點了
+///          切換、修邊、換背景）；影片進剪輯，接好就開始算人像遮罩
 ///   剪輯 → 直接開一條空的時間軸
 ///
 /// 「製作浮水印」（浮水印工作室）從首頁拿掉，走 個人中心 → 範本 → ＋
@@ -284,6 +287,56 @@ class _HomeScreenState extends State<HomeScreen> {
     return false;
   }
 
+  /// 去背：先問照片還是影片（照馬賽克的入口）。
+  /// - 照片：挑一張進去背頁（自動找主體、全部留下，點主體切換）
+  /// - 影片：挑一支進剪輯，接好就開始算人像遮罩（背景算，不擋操作）。
+  ///   一次一支，多選了拿第一支
+  ///
+  /// 回傳「要不要回到第一層」，同 [_pickForWatermark]。不自己上重入鎖，
+  /// 理由同 [_makeGif]
+  Future<bool> _makeCutout() async {
+    final kind = await _showSheet<_Media>(
+      back: '去背',
+      backValue: _Media.back,
+      rows: const [
+        _SheetRow(
+          icon: Icons.photo_outlined,
+          label: '照片',
+          sub: '人、寵物、物品都可以',
+          value: _Media.photo,
+        ),
+        _SheetRow(
+          icon: Icons.movie_outlined,
+          label: '影片',
+          sub: '一次一支，人像自動去背',
+          value: _Media.video,
+        ),
+      ],
+    );
+    if (kind == null || !mounted) return false;
+    if (kind == _Media.back) return true;
+    if (kind == _Media.photo) {
+      final picked = await pickPhotoFile();
+      if (picked == null || !mounted) return false;
+      await Navigator.push(
+        context,
+        editRoute(builder: (_) => CutoutScreen(photo: picked)),
+      );
+      return false;
+    }
+    final list = await pickVideoFiles();
+    final v = list.where(_isVideoFile).toList();
+    if (v.isEmpty || !mounted) return false;
+    await Navigator.push(
+      context,
+      editRoute(
+        builder: (_) =>
+            VideoEditorScreen(videoPath: v.first.path, cutoutEntry: true),
+      ),
+    );
+    return false;
+  }
+
   /// 選完才講的提醒（略過的檔案、數量偏多）。
   /// 數量上限以前寫在選單上，但使用者還沒開始挑就先看到限制沒什麼用，
   /// 挑完才講才是他真的需要知道的時候
@@ -483,6 +536,8 @@ class _HomeScreenState extends State<HomeScreen> {
           await _makeGif();
         case _HomeAction.mosaic:
           again = await _makeMosaic();
+        case _HomeAction.cutout:
+          again = await _makeCutout();
         case _HomeAction.cut:
           // 不挑素材，直接開一條空的時間軸，照片、影片進去再加
           await Navigator.push(
@@ -519,6 +574,12 @@ class _HomeScreenState extends State<HomeScreen> {
         label: '馬賽克',
         sub: '照片、影片自動找出人臉打碼',
         value: _HomeAction.mosaic,
+      ),
+      _SheetRow(
+        icon: Icons.auto_fix_high_outlined,
+        label: '去背',
+        sub: '照片、影片自動去掉背景',
+        value: _HomeAction.cutout,
       ),
       _SheetRow(
         icon: Icons.smart_display_outlined,
@@ -660,7 +721,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 /// ＋選單第一層的五個去處
-enum _HomeAction { watermark, collage, gif, mosaic, cut }
+enum _HomeAction { watermark, collage, gif, mosaic, cutout, cut }
 
 /// 浮水印第二層的結果：兩種素材，加上「回上一層」
 enum _Media { photo, video, back }

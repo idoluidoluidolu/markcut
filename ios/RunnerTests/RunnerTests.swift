@@ -2695,3 +2695,150 @@ class RunnerTests: XCTestCase {
   }
 
 }
+
+/// 去背（markcut/cutout）的原生部分：遮罩檔讀寫、合成器把「轉正後」的
+/// 遮罩對回旋轉前的來源格（iPhone 直拍是 90° 旗標）、影片與照片管線跑得通
+final class CutoutNativeTests: XCTestCase {
+  private func tmp(_ name: String) -> String {
+    (NSTemporaryDirectory() as NSString)
+      .appendingPathComponent("\(UUID().uuidString)-\(name)")
+  }
+
+  /// 寫一個遮罩檔：第 i 格的 (x, y) 由 [value] 給
+  private func writeMask(
+    _ path: String, w: Int, h: Int, pts: [Double],
+    value: (Int, Int, Int) -> UInt8
+  ) throws {
+    let writer = try MCCutoutMaskWriter(path: path, width: w, height: h)
+    for (i, t) in pts.enumerated() {
+      var d = Data(count: w * h)
+      d.withUnsafeMutableBytes { p in
+        let b = p.bindMemory(to: UInt8.self)
+        for y in 0..<h {
+          for x in 0..<w { b[y * w + x] = value(i, x, y) }
+        }
+      }
+      try writer.add(pts: t, mask: d)
+    }
+    try writer.finish()
+  }
+
+  /// 畫進 BGRA 讀每個像素的 alpha（第一列是畫面最上面）
+  private func alphas(_ img: CIImage, w: Int, h: Int) throws -> [[UInt8]] {
+    var pb: CVPixelBuffer?
+    let attrs = [kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()]
+    CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pb)
+    let buf = try XCTUnwrap(pb)
+    let ctx = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+    ctx.render(img, to: buf, bounds: CGRect(x: 0, y: 0, width: w, height: h), colorSpace: nil)
+    CVPixelBufferLockBaseAddress(buf, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
+    let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(buf)).assumingMemoryBound(to: UInt8.self)
+    let row = CVPixelBufferGetBytesPerRow(buf)
+    return (0..<h).map { y in (0..<w).map { x in base[y * row + x * 4 + 3] } }
+  }
+
+  private func white(_ w: Int, _ h: Int) -> CIImage {
+    CIImage(color: CIColor(red: 1, green: 1, blue: 1))
+      .cropped(to: CGRect(x: 0, y: 0, width: w, height: h))
+  }
+
+  func testMaskFileRoundTripAndLookup() throws {
+    let p = tmp("a.mcmk")
+    try writeMask(p, w: 4, h: 2, pts: [0, 1.0 / 30, 2.0 / 30]) { i, x, y in
+      UInt8(i * 100 + y * 10 + x)
+    }
+    let m = try XCTUnwrap(MCCutoutMask.open(p))
+    XCTAssertEqual(m.width, 4)
+    XCTAssertEqual(m.height, 2)
+    XCTAssertEqual(m.index(at: -1), 0)
+    XCTAssertEqual(m.index(at: 1.0 / 30), 1)
+    XCTAssertEqual(m.index(at: 0.05), 1)
+    XCTAssertEqual(m.index(at: 99), 2)
+    let img = try XCTUnwrap(m.image(at: 0.05))
+    // 第一列是畫面最上面：解出來、畫回位元組，順序要一模一樣
+    XCTAssertEqual([UInt8](MCCutout.gray(img, w: 4, h: 2)), [100, 101, 102, 103, 110, 111, 112, 113])
+  }
+
+  func testSpecKeepsTopOfMaskOnTop() throws {
+    let p = tmp("b.mcmk")
+    try writeMask(p, w: 8, h: 4, pts: [0]) { _, _, y in y < 2 ? 255 : 0 }
+    let spec = try XCTUnwrap(MCCutoutSpec(args: ["mask": p], start: 0, rate: 1, orient: .identity))
+    let a = try alphas(spec.apply(to: white(8, 4), at: 0, hdr: false), w: 8, h: 4)
+    for x in 0..<8 {
+      XCTAssertGreaterThan(a[0][x], 240, "x=\(x)")
+      XCTAssertLessThan(a[3][x], 15, "x=\(x)")
+    }
+  }
+
+  func testSpecMapsUprightMaskOntoRotatedSource() throws {
+    // iPhone 直拍：檔案裡是橫的 8×4、旋轉旗標 90°（a=0 b=1 c=-1 d=0 tx=高），
+    // 轉正後是 4×8。遮罩是轉正後的畫面，上半是人 → 回到來源格是「左半」
+    let p = tmp("c.mcmk")
+    try writeMask(p, w: 4, h: 8, pts: [0]) { _, _, y in y < 4 ? 255 : 0 }
+    let orient = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 4, ty: 0)
+    let spec = try XCTUnwrap(MCCutoutSpec(args: ["mask": p], start: 0, rate: 1, orient: orient))
+    let a = try alphas(spec.apply(to: white(8, 4), at: 0, hdr: false), w: 8, h: 4)
+    for y in 0..<4 {
+      XCTAssertGreaterThan(a[y][1], 240, "y=\(y)")
+      XCTAssertLessThan(a[y][6], 15, "y=\(y)")
+    }
+  }
+
+  func testSpecTimeMapFollowsSegmentAndDirection() throws {
+    let p = tmp("d.mcmk")
+    try writeMask(p, w: 2, h: 2, pts: [0, 1, 2, 3]) { i, _, _ in UInt8(i * 60) }
+    let fwd = try XCTUnwrap(MCCutoutSpec(
+      args: ["mask": p, "m0": 1.0, "dir": 1], start: 10, rate: 2, orient: .identity))
+    XCTAssertEqual(fwd.maskTime(10.5), 2, accuracy: 1e-9)
+    // 倒轉檔：遮罩秒數往回走；整條變速之後開頭跟著除、速率跟著乘
+    let rev = try XCTUnwrap(MCCutoutSpec(
+      args: ["mask": p, "m0": 3.0, "dir": -1], start: 4, rate: 1, orient: .identity))
+    XCTAssertEqual(rev.maskTime(5), 2, accuracy: 1e-9)
+    XCTAssertEqual(rev.rescaled(by: 2).maskTime(2.5), 2, accuracy: 1e-9)
+  }
+
+  func testVideoMaskRunsOnFixture() throws {
+    let input = try XCTUnwrap(Bundle(for: RunnerTests.self)
+      .url(forResource: "native-scrub", withExtension: "mp4"))
+    let out = tmp("v.mcmk")
+    let r: [String: Any]
+    do {
+      r = try MCCutout.videoMask(
+        path: input.path, out: out, cancelled: AtomicFlag(),
+        gate: MCInteractivePrepGate(), progress: { _ in })
+    } catch {
+      throw XCTSkip("Vision 人像分割在這台模擬器上跑不了：\(error)")
+    }
+    XCTAssertGreaterThan(try XCTUnwrap(r["frames"] as? Int), 0)
+    let m = try XCTUnwrap(MCCutoutMask.open(out))
+    XCTAssertGreaterThan(m.width, 0)
+    XCTAssertNotNil(m.image(at: 0))
+  }
+
+  func testAnalyzePhotoReturnsPreviewSizedMask() throws {
+    // 黑底中間一個白色的圓：有沒有找到主體看模型，這裡只驗尺寸與格式
+    let size = CGSize(width: 640, height: 480)
+    let png = UIGraphicsImageRenderer(size: size).pngData { ctx in
+      UIColor.black.setFill()
+      ctx.fill(CGRect(origin: .zero, size: size))
+      UIColor.white.setFill()
+      ctx.cgContext.fillEllipse(in: CGRect(x: 220, y: 140, width: 200, height: 200))
+    }
+    let p = tmp("photo.png")
+    try png.write(to: URL(fileURLWithPath: p))
+    let r: [String: Any]?
+    do {
+      r = try MCCutout.analyzePhoto(path: p, maxSide: 4096, previewSide: 320)
+    } catch {
+      throw XCTSkip("Vision 主體分割在這台模擬器上跑不了：\(error)")
+    }
+    let m = try XCTUnwrap(r)
+    XCTAssertEqual(m["w"] as? Int, 320)
+    XCTAssertEqual(m["h"] as? Int, 240)
+    let mask = try XCTUnwrap(m["mask"] as? FlutterStandardTypedData)
+    XCTAssertEqual(mask.data.count, 320 * 240)
+    let masked = try MCCutout.photoMask(path: p, ids: [], maxSide: 160)
+    XCTAssertEqual(masked?["w"] as? Int, 160)
+  }
+}

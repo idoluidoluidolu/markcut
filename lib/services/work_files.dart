@@ -207,7 +207,7 @@ class WorkFiles {
   static String sourceOfKey(String key) {
     final rev = key.lastIndexOf('#rev:');
     if (rev > 0) return key.substring(0, rev);
-    for (final tail in const ['#hdr6', '#hdr']) {
+    for (final tail in const ['#hdr6', '#hdr', _cutTail]) {
       if (key.endsWith(tail)) return key.substring(0, key.length - tail.length);
     }
     return key;
@@ -1058,4 +1058,57 @@ class WorkFiles {
       if (f.existsSync()) f.deleteSync();
     } catch (_) {}
   }
+
+  // ===== 去背遮罩（.mcmk，見 services/cutout_mask.dart）=====
+  //
+  // 跟倒轉檔同一套：放在工作檔目錄、索引 key 是「原檔路徑＋尾巴」，
+  // 同一支影片換一個專案再匯入，遮罩直接拿來用、不用重算；刪草稿、
+  // 草稿夾「清理」也照同一套規則一起清（sourceOfKey 認得這個尾巴）。
+  // 遮罩算法改了（模型、解析度）就把版本號往上加，舊的自然對不上
+
+  static const _cutTail = '#cut1';
+
+  /// 這支影片已經算好的遮罩（沒有、或原檔換過內容回 null，不會去算）
+  static Future<String?> lookupCutout(String src) async {
+    if (kIsWeb) return null;
+    final idx = await _load();
+    final e = idx['$src$_cutTail'];
+    if (e is! Map) return null;
+    final work = e['work'] as String?;
+    if (work == null || !File(work).existsSync()) return null;
+    final stamp = _stamp(src);
+    if (stamp != null && e['stamp'] != null && e['stamp'] != stamp) return null;
+    return work;
+  }
+
+  /// 要開始算遮罩了：給工作檔目錄底下的目的地、掛進 in-flight（寫到一半
+  /// 的檔不能被清掃當孤兒刪掉）。做完一定要叫 [commitCutout] 或
+  /// [abortCutout]
+  static Future<String> beginCutout() async {
+    final dir = await _dir();
+    final name = 'cut${DateTime.now().microsecondsSinceEpoch}_${_seq++}.mcmk';
+    final dest = '${dir.path}${Platform.pathSeparator}$name';
+    _inFlight.add(dest);
+    return dest;
+  }
+
+  /// 遮罩算好了：登記進索引、解除 in-flight。同一支影片舊的那份（換過
+  /// 版本、原檔換過內容）留給清掃收
+  static Future<void> commitCutout(String src, String dest) async {
+    final idx = await _load();
+    idx['$src$_cutTail'] = {
+      'work': dest,
+      'stamp': _stamp(src),
+      'at': DateTime.now().millisecondsSinceEpoch,
+    };
+    if (await _save()) {
+      _inFlight.remove(dest);
+    } else {
+      Diag.note('去背遮罩索引寫入失敗（本次照用，先不給清掃碰）');
+    }
+    unawaited(sweep());
+  }
+
+  /// 遮罩沒算成（失敗／取消）：解除 in-flight、殘檔刪掉
+  static void abortCutout(String dest) => abortReverse(dest);
 }

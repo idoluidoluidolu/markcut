@@ -55,6 +55,7 @@ import '../services/photo_export.dart' show encodePhotoImage;
 import '../services/gif_store.dart';
 import '../services/export_eta.dart';
 import '../services/export_speed.dart';
+import '../services/cutout_detect.dart';
 import '../services/face_detect.dart';
 import '../services/face_mosaic_plan.dart';
 import '../services/face_tracks.dart';
@@ -78,6 +79,7 @@ import '../services/preview_raster_queue.dart';
 import '../services/scrub_visibility.dart';
 import '../theme.dart';
 import '../widgets/color_grade_panel.dart';
+import '../widgets/cutout_layer.dart';
 import '../widgets/text_insert_bar.dart';
 import '../widgets/timeline_editor.dart';
 import '../widgets/face_avatar.dart';
@@ -170,6 +172,9 @@ class VideoEditorScreen extends StatefulWidget {
   ///（自動碼人臉／方框／筆刷——使用者在畫布選的甲案）
   final bool mosaicEntry;
 
+  /// 從首頁「去背 → 影片」進來：影片接好就開去背、開始算人像遮罩
+  final bool cutoutEntry;
+
   const VideoEditorScreen({
     super.key,
     this.videoPath,
@@ -184,6 +189,7 @@ class VideoEditorScreen extends StatefulWidget {
     this.playerFactory,
     this.debugAndroid,
     this.mosaicEntry = false,
+    this.cutoutEntry = false,
   }) : assert(
          videoPath != null ||
              videoPaths != null ||
@@ -229,8 +235,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   late final Ticker _ticker;
   late final WatermarkSettings _settings =
       widget.initialWatermark?.copy() ??
-      // 從馬賽克進來的不帶預設浮水印字（同照片編輯器的馬賽克模式）
-      (widget.mosaicEntry
+      // 從馬賽克、去背進來的不帶預設浮水印字（同照片編輯器的馬賽克模式）
+      (widget.mosaicEntry || widget.cutoutEntry
           ? (WatermarkSettings()..text.enabled = false)
           : WatermarkSettings());
 
@@ -2045,6 +2051,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       if (s.workPath?.isNotEmpty ?? false) s.workPath!,
       if (s.workHdrPath?.isNotEmpty ?? false) s.workHdrPath!,
       if (s.revOf?.isNotEmpty ?? false) s.revOf!,
+      if (s.cutMask?.isNotEmpty ?? false) s.cutMask!,
     ],
   };
 
@@ -2146,7 +2153,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             // 裁切同理：合成播放器畫不出來，裁了要換回逐片段那條路
             '|${c.color.hasColor}|${c.cropped}'
             '|${c.cropL}|${c.cropT}|${c.cropW}|${c.cropH}'
-            '|${c.opacity}|${c.rotation}',
+            '|${c.opacity}|${c.rotation}'
+            // 去背：開關、背景、遮罩算好了沒（算好的那一刻就要重組，
+            // 不能等工作檔全部轉完）；遮罩檔路徑算「路徑」那一類
+            '|cut${c.cutout?.bg.index ?? -1}:${c.cutout?.color ?? 0}'
+            ':${cutoutActive(c, _tl.sourceOf(c))}'
+            '${withPaths ? ':${_tl.sourceOf(c).cutMask ?? ''}' : ''}',
     // 聲音片段（配樂／旁白／提取的聲音）也是烘進合成的（build 的
     // audios 鋪純聲音軌）：加音樂、搬位置、改音量、變速、淡入淡出都要
     // 重組。以前指紋只記影片——加了音樂合成不重組，預覽就一直無聲
@@ -3642,6 +3654,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         if (mounted && !_prepBusy) unawaited(_thumbsAfterPrep());
       }),
     );
+    // 去背：遮罩檔被清掉的素材重新接上（原檔算過就直接拿）或重算
+    _resumeCutMasks();
     unawaited(_ensureComp());
   }
 
@@ -3863,6 +3877,17 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_askMosaic(_tl.usedTracks));
       });
+    }
+    // 從首頁「去背 → 影片」進來：影片接好就開去背（背景先透明）、
+    // 開始算遮罩；選著它，工具列的「去背」直接就能換背景
+    if (widget.cutoutEntry) {
+      final first = _tl.clips
+          .where((c) => _tl.sourceOf(c).isVideo)
+          .firstOrNull;
+      if (first != null) {
+        setState(() => _sel = first.id);
+        _setCutout(first, ClipCutout(), undo: false);
+      }
     }
   }
 
@@ -8983,6 +9008,422 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
   }
 
+  // ===== 去背（影片）=====
+  //
+  // 遮罩是素材的（MediaSource.cutMask：整支影片每一格的人像遮罩，原生端
+  // 算好寫成 .mcmk），開不開、背景換什麼是片段的（TimelineClip.cutout）。
+  // 遮罩照「原檔」登記在工作檔索引（WorkFiles.lookupCutout）：同一支影片
+  // 換個專案再匯入不用重算。算的時候跟轉檔一樣讓路給滑動與播放（原生端
+  // 看同一道閘），進度在預覽左上角一顆小膠囊，不擋操作
+
+  /// 正在算遮罩的原檔（原檔路徑 → 工作）
+  final Map<String, CutoutVideoJob> _cutJobs = {};
+
+  /// 算遮罩的進度（原檔路徑 → 0~1）：預覽的膠囊、去背表都聽它
+  final ValueNotifier<Map<String, double>> _cutProgress = ValueNotifier(
+    const {},
+  );
+
+  /// 算失敗的原檔 → 原因（去背表給「重試」）
+  final Map<String, String> _cutFailed = {};
+
+  /// 遮罩照哪一支原檔算（倒轉檔照它的原檔，時間對照見 models/cutout.dart）
+  String _cutKey(MediaSource s) => s.revOf ?? s.path;
+
+  void _setCutProgress(String key, double? p) {
+    if (!mounted) return;
+    final m = Map.of(_cutProgress.value);
+    if (p == null) {
+      m.remove(key);
+    } else {
+      m[key] = p;
+    }
+    _cutProgress.value = m;
+  }
+
+  /// 開關去背／換背景：[cut] null＝關掉。遮罩還沒有就開始算
+  void _setCutout(TimelineClip c, ClipCutout? cut, {bool undo = true}) {
+    if (undo) _pushUndo();
+    setState(() => c.cutout = cut);
+    if (cut != null) unawaited(_ensureCutMask(_tl.sourceOf(c)));
+    _compRefreshIfChanged();
+    _saveDraft();
+  }
+
+  /// 這支素材的遮罩：已經有就好；原檔算過（索引裡有）直接接上；都沒有
+  /// 就開始算（同一支原檔同時只算一份）
+  Future<void> _ensureCutMask(MediaSource src) async {
+    if (!src.isVideo) return;
+    final have = src.cutMask;
+    if (have != null && File(have).existsSync()) return;
+    final key = _cutKey(src);
+    if (_cutJobs.containsKey(key)) return;
+    final hit = await WorkFiles.lookupCutout(key);
+    if (!mounted) return;
+    if (hit != null) {
+      _applyCutMask(key, hit);
+      return;
+    }
+    // 等索引的時候另一個呼叫已經開工了
+    if (_cutJobs.containsKey(key)) return;
+    final job = CutoutVideoJob();
+    _cutJobs[key] = job;
+    _cutFailed.remove(key);
+    _setCutProgress(key, 0);
+    final dest = await WorkFiles.beginCutout();
+    // 照原檔算（倒轉檔的時間對照是照原檔的）；原檔的工作檔轉好了就用
+    // 工作檔（同一份畫面、時間一樣，解碼輕很多）
+    var input = key;
+    for (final s in _tl.sources) {
+      if (s.revOf == null && s.path == key) {
+        input = s.previewPath;
+        break;
+      }
+    }
+    var ok = false;
+    if (!job.cancelled && mounted) {
+      ok = await CutoutDetect.videoMask(
+        input,
+        dest,
+        job: job,
+        onProgress: (p) => _setCutProgress(key, p),
+      );
+    }
+    _cutJobs.remove(key);
+    _setCutProgress(key, null);
+    if (!ok) {
+      WorkFiles.abortCutout(dest);
+      if (!mounted) return;
+      if (job.cancelled) {
+        // 使用者按掉的：去背表留一顆「重試」
+        setState(() => _cutFailed[key] = '已停止');
+        return;
+      }
+      final why = CutoutDetect.lastErrorBrief ?? '原因不明';
+      setState(() => _cutFailed[key] = why);
+      showHint(context, '去背沒算成\n$why', error: true);
+      return;
+    }
+    await WorkFiles.commitCutout(key, dest);
+    if (!mounted) return;
+    _applyCutMask(key, dest);
+  }
+
+  /// 遮罩好了：同一支原檔的每一份素材（倒轉檔、重複匯入的）都接上
+  void _applyCutMask(String key, String path) {
+    setState(() {
+      for (final s in _tl.sources) {
+        if (s.isVideo && _cutKey(s) == key) s.cutMask = path;
+      }
+    });
+    _compRefreshIfChanged();
+    _saveDraft();
+  }
+
+  /// 草稿打開時：開著去背、遮罩檔卻不在了（被清掉）的素材重新接上或重算
+  void _resumeCutMasks() {
+    final seen = <String>{};
+    for (final c in _tl.clips) {
+      if (c.cutout == null) continue;
+      final s = _tl.sourceOf(c);
+      if (!s.isVideo || !seen.add(_cutKey(s))) continue;
+      final m = s.cutMask;
+      if (m != null && File(m).existsSync()) continue;
+      s.cutMask = null;
+      unawaited(_ensureCutMask(s));
+    }
+  }
+
+  /// 預覽上 Flutter 畫的影片層套去背（Android 的播放器圖層、拖曳快取幀、
+  /// iOS 合成播放器還沒接手時）。原生合成器那條在 Swift，不經過這裡。
+  /// 播放中照播放器自己的位置（畫面上那一格）取遮罩，停著、拖著照時間軸
+  Widget _cutoutWrap(
+    TimelineClip c,
+    Widget media, {
+    Widget? blurSource,
+    PlayerX? ctrl,
+  }) {
+    final src = _tl.sourceOf(c);
+    if (!cutoutActive(c, src)) return media;
+    final u = (_playing && ctrl != null && !c.reverse)
+        ? ctrl.value.position.inMicroseconds / 1e6
+        : c.sourceTimeForDisplayAt(_position);
+    return CutoutLayer(
+      maskPath: src.cutMask!,
+      time: cutoutMaskTimeOfSource(src, u),
+      cut: c.cutout!,
+      blurSource: blurSource,
+      child: media,
+    );
+  }
+
+  /// 去背表：開關、背景（透明／純色／模糊）、算到哪了
+  Future<void> _openCutoutSheet(TimelineClip c) async {
+    _pause();
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          final cut = c.cutout;
+          final src = _tl.sourceOf(c);
+          final key = _cutKey(src);
+          void set(ClipCutout? v) {
+            _setCutout(c, v);
+            setSheet(() {});
+          }
+
+          Widget tile(CutoutBg bg, IconData icon, String label) {
+            final on = cut?.bg == bg;
+            return Expanded(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: on || cut == null
+                    ? null
+                    : () => set(ClipCutout(bg: bg, color: cut.color)),
+                child: Container(
+                  height: 62,
+                  decoration: BoxDecoration(
+                    color: on ? kPanelHi : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: on ? kAmber : kClipBorder,
+                      width: on ? 1.5 : 1,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(icon, size: 24, color: on ? kText : kIcon),
+                      const SizedBox(height: 6),
+                      Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: on ? FontWeight.w700 : FontWeight.w400,
+                          color: kText,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }
+
+          Widget swatch(int? color) {
+            final on =
+                cut != null &&
+                (color == null
+                    ? !kCutoutColors.contains(cut.color)
+                    : cut.color == color);
+            return GestureDetector(
+              onTap: () async {
+                if (cut == null) return;
+                var v = color;
+                if (v == null) {
+                  v = await pickColor(
+                    context,
+                    Color(cut.color),
+                    title: '背景顏色',
+                  );
+                  if (v == null || !mounted) return;
+                }
+                set(ClipCutout(bg: CutoutBg.color, color: v));
+              },
+              child: Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: color == null ? null : Color(color),
+                  gradient: color == null
+                      ? const SweepGradient(
+                          colors: [
+                            Colors.red,
+                            Colors.yellow,
+                            Colors.green,
+                            Colors.cyan,
+                            Colors.blue,
+                            Colors.purple,
+                            Colors.red,
+                          ],
+                        )
+                      : null,
+                  border: Border.all(
+                    color: on ? kAmber : kClipBorder,
+                    width: on ? 2.5 : 1,
+                  ),
+                ),
+              ),
+            );
+          }
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      const Text(
+                        '人像去背',
+                        style: TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w600,
+                          color: kText,
+                        ),
+                      ),
+                      const Spacer(),
+                      Switch(
+                        value: cut != null,
+                        onChanged: (v) => set(v ? ClipCutout() : null),
+                      ),
+                    ],
+                  ),
+                  if (cut != null) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        tile(CutoutBg.none, Icons.grid_4x4, '透明'),
+                        const SizedBox(width: 8),
+                        tile(CutoutBg.color, Icons.format_color_fill, '純色'),
+                        const SizedBox(width: 8),
+                        tile(CutoutBg.blur, Icons.blur_on, '模糊'),
+                      ],
+                    ),
+                    if (cut.bg == CutoutBg.color) ...[
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        height: 30,
+                        child: ListView(
+                          scrollDirection: Axis.horizontal,
+                          children: [
+                            for (final col in [...kCutoutColors, null])
+                              Padding(
+                                padding: const EdgeInsets.only(right: 10),
+                                child: swatch(col),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    ValueListenableBuilder<Map<String, double>>(
+                      valueListenable: _cutProgress,
+                      builder: (ctx, m, _) {
+                        final p = m[key];
+                        if (p != null) {
+                          return Row(
+                            children: [
+                              Expanded(
+                                child: LinearProgressIndicator(
+                                  value: p <= 0 ? null : p,
+                                  color: kSelect,
+                                  backgroundColor: kBorder,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                '去背中 ${(p * 100).round()}%',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: kTextDim,
+                                ),
+                              ),
+                            ],
+                          );
+                        }
+                        final err = _cutFailed[key];
+                        if (err == null) return const SizedBox.shrink();
+                        return Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                '去背沒算成',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Color(0xFFFF6B6B),
+                                ),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                unawaited(_ensureCutMask(src));
+                                setSheet(() {});
+                              },
+                              child: const Text('重試'),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// 算遮罩中的小膠囊（同找臉那顆，不擋操作；可以按掉）
+  Widget _cutProgressChip() => ValueListenableBuilder<Map<String, double>>(
+    valueListenable: _cutProgress,
+    builder: (context, m, _) {
+      if (m.isEmpty) return const SizedBox.shrink();
+      final p = m.values.reduce(math.min);
+      return Container(
+        height: 30,
+        padding: const EdgeInsets.only(left: 10),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.72),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: kClipBorder),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                value: p <= 0 ? null : p,
+                strokeWidth: 2.2,
+                color: kSelect,
+                backgroundColor: kBorder,
+              ),
+            ),
+            const SizedBox(width: 7),
+            Text(
+              '去背 ${(p * 100).round()}%',
+              style: const TextStyle(
+                fontSize: 12,
+                color: kText,
+                fontFeatures: [ui.FontFeature.tabularFigures()],
+              ),
+            ),
+            IconButton(
+              tooltip: '停止去背',
+              visualDensity: VisualDensity.compact,
+              iconSize: 16,
+              onPressed: () {
+                for (final j in _cutJobs.values) {
+                  unawaited(j.cancel());
+                }
+              },
+              icon: const Icon(Icons.close, color: kIcon),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+
   /// 找臉中的小膠囊：進度圈＋百分比＋停止
   Widget _faceProgressChip() => Container(
     height: 30,
@@ -12889,6 +13330,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   void dispose() {
     // 離開編輯器時還在找臉：叫原生端停下來，不要白白解完一整支影片
     unawaited(_faceJob?.cancel());
+    // 去背遮罩同理（算一半的殘檔由 _ensureCutMask 收掉）
+    for (final j in _cutJobs.values) {
+      unawaited(j.cancel());
+    }
+    _cutProgress.dispose();
     for (final f in _faceThumbs.values) {
       f.frame.dispose();
     }
@@ -13016,6 +13462,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     // 看不懂的錯誤訊息。直接講人話擋下來
     if (_tl.clips.isEmpty) {
       showHint(context, '時間軸還是空的，先用「加素材」放點東西進來', error: true);
+      return;
+    }
+    // 去背的遮罩還在算：這時匯出，那幾段會整張出去（沒去背）
+    if (_tl.clips.any(
+      (c) =>
+          c.cutout != null &&
+          !_hiddenTracks.contains(c.track) &&
+          !cutoutActive(c, _tl.sourceOf(c)),
+    )) {
+      showHint(
+        context,
+        _cutJobs.isEmpty ? '有片段的去背沒算成，先到「去背」重試' : '去背還在算，算完再匯出',
+        error: true,
+      );
       return;
     }
     // 用到的下載字型要先在手機裡：還沒下載的現在下載，下載不了就擋下來
@@ -14666,13 +15126,23 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             vidTrack,
                                             Positioned.fromRect(
                                               rect: layerBox(cur, src0.aspect),
-                                              child: Image.memory(
-                                                fb,
-                                                key: ValueKey(
-                                                  'scrub-cache-${cur.id}',
+                                              // 去背的片段：快取幀一樣要挖
+                                              //（不然拖曳時整張露出來）
+                                              child: _cutoutWrap(
+                                                cur,
+                                                Image.memory(
+                                                  fb,
+                                                  key: ValueKey(
+                                                    'scrub-cache-${cur.id}',
+                                                  ),
+                                                  fit: BoxFit.fill,
+                                                  gaplessPlayback: true,
                                                 ),
-                                                fit: BoxFit.fill,
-                                                gaplessPlayback: true,
+                                                blurSource: Image.memory(
+                                                  fb,
+                                                  fit: BoxFit.fill,
+                                                  gaplessPlayback: true,
+                                                ),
                                               ),
                                             ),
                                           );
@@ -14723,10 +15193,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                 opacity: c.fadeFactorAt(
                                                   _position,
                                                 ),
-                                                child: Image.memory(
-                                                  fb,
-                                                  fit: BoxFit.fill,
-                                                  gaplessPlayback: true,
+                                                child: _cutoutWrap(
+                                                  c,
+                                                  Image.memory(
+                                                    fb,
+                                                    fit: BoxFit.fill,
+                                                    gaplessPlayback: true,
+                                                  ),
+                                                  blurSource: Image.memory(
+                                                    fb,
+                                                    fit: BoxFit.fill,
+                                                    gaplessPlayback: true,
+                                                  ),
                                                 ),
                                               ),
                                             ),
@@ -14800,6 +15278,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                             child: Stack(
                                               fit: StackFit.expand,
                                               children: [
+                                                // 去背：畫面（播放器＋拖曳快取幀）
+                                                // 照遮罩挖。暖身層也一起包：
+                                                // 暖身轉正式只改大小、結構不變，
+                                                // 材質才不會拆掉重掛（閃一下）
+                                                _cutoutWrap(
+                                                  c,
+                                                  Stack(
+                                                    fit: StackFit.expand,
+                                                    children: [
                                                 // key 綁「播放器」不綁片段 id：
                                                 // 切割的兩段在交界換手同一顆
                                                 // 播放器，key 不變貼圖就不用
@@ -14877,6 +15364,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                                                       },
                                                     ),
                                                   ),
+                                                    ],
+                                                  ),
+                                                  // 模糊背景：同一顆播放器再掛一份
+                                                  blurSource:
+                                                      c.cutout?.bg ==
+                                                          CutoutBg.blur
+                                                      ? ctrl.view(
+                                                          key: ValueKey(
+                                                            'cutbg${c.id}',
+                                                          ),
+                                                        )
+                                                      : null,
+                                                  ctrl: ctrl,
+                                                ),
                                                 // 點擊層必須疊在影片「上面」：影片是平台原生元件
                                                 // （Web 是 HTML video），會吃掉底下的點擊事件
                                                 // （預掛的隱形影片不收點擊）
@@ -16383,6 +16884,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
               // 自動碼人臉：找的時候左上角一顆小膠囊（不擋操作）
               if (_faceJob != null && !_fullscreen)
                 Positioned(left: 10, top: 8, child: _faceProgressChip()),
+              // 去背算遮罩：同一個位置（找臉也在跑就排在它下面）
+              if (!_fullscreen)
+                Positioned(
+                  left: 10,
+                  top: _faceJob != null ? 44 : 8,
+                  child: _cutProgressChip(),
+                ),
               // 工作檔在背景備，不出現在畫面上：進場就能剪，
               // 好了自己換過去。別家剪輯 App 也沒有那個讀取條
             ],
@@ -17506,6 +18014,18 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                             : '這種素材不能調色（影片、圖片才可以）',
                       ),
                       _toolBtn(
+                        Icons.auto_fix_high_outlined,
+                        '去背',
+                        (sel != null && _tl.sourceOf(sel).isVideo)
+                            ? () => _openCutoutSheet(sel)
+                            : null,
+                        tip: '人像去背、換背景',
+                        color: sel?.cutout != null ? kSelect : null,
+                        disabledHint: sel == null
+                            ? '先在時間軸點選一段影片'
+                            : '只有影片可以去背（照片從首頁「去背」進來）',
+                      ),
+                      _toolBtn(
                         Icons.speed,
                         '速度',
                         // 速度只針對單一素材：一定要選著影片/聲音片段。
@@ -18187,6 +18707,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         revStart: cur.trimStart,
         revEnd: cur.trimEnd,
         revColorVersion: WorkFiles.reverseColorVersion,
+        // 去背沿用原檔的遮罩（倒轉檔的時間換回原檔，見 models/cutout.dart）
+        cutMask: src.revOf == null ? src.cutMask : null,
       ),
     );
     // 倒轉檔的縮圖與拖曳快取（聲音沒有畫面）

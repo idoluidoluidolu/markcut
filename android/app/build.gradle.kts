@@ -110,4 +110,9 @@ dependencies {
     // 馬賽克的自動找臉（markcut/face）。模型跟著 App 一起裝（約 +6.9MB），
     // 不靠 Google Play 服務臨時下載：第一次用不用等、沒網路也能找
     implementation("com.google.mlkit:face-detection:16.1.7")
+    // 去背（markcut/cutout）：照片的主體分割走 Google Play 服務（App 只多
+    // 約 200KB，模型由 Play 服務下載，manifest 有登記安裝時就下載）；
+    // 影片與「沒有 Play 服務」的退路用內建的人像分割
+    implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
+    implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
 }

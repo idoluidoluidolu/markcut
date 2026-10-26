@@ -106,6 +106,8 @@ class NativeExport {
         if (c.color.hasColor) return true;
         // 裁切/旋轉/透明度只有 CI 合成器（圖層模式）畫得出來
         if (c.cropped || c.rotated || c.faded) return true;
+        // 去背也是（遮罩每一格在 CI 合成器裡挖）
+        if (cutoutActive(c, spec.sources[c.sourceIndex])) return true;
         vids.add(c);
       }
     }
@@ -154,6 +156,8 @@ class NativeExport {
         if (c.cropped) 'crop': [c.cropL, c.cropT, c.cropW, c.cropH],
         'rotation': c.rotation,
         'opacity': c.opacity,
+        // 去背（圖層模式的 CI 合成器挖，見 needsLayered）
+        'cutout': ?cutoutPayload(c, spec.sources[c.sourceIndex]),
       });
       cursor = c.end;
     }
