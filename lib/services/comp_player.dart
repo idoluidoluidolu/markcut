@@ -605,6 +605,39 @@ class CompPlayer {
     }
   }
 
+  /// 合成畫框要送給原生的比例（[build] 的 canvasAspect；null＝交給原生）。
+  ///
+  /// 固定比例 [fixed] 照送。「原始」原生自己量：沒排除的影片裡最底層、
+  /// 最早的那段，量的是實際播的那支檔——工作檔轉正縮過，尺寸可能跟 Dart
+  /// 記的原檔差一兩個像素，硬送 Dart 算的比例會在邊上多一條黑線。
+  /// 只有原生會挑的那段跟畫布的底（[TimelineModel.canvasBase]）形狀對不上
+  /// 才送畫布的比例：底層是圖片（原生只挑影片）、或最底層那軌被隱藏
+  ///（[hiddenTracks] 整軌不進合成）——不送的話合成照別段的形狀組，
+  /// 預覽框（照匯出的畫布）裡就是縮小的一張、疊加物也對不上位置
+  static double? canvasAspectFor(
+    TimelineModel tl, {
+    double? fixed,
+    Set<int> hiddenTracks = const {},
+  }) {
+    if (fixed != null) return fixed;
+    final base = tl.canvasBase();
+    if (base == null) return null;
+    TimelineClip? own;
+    for (final c in tl.clips) {
+      if (!tl.sourceOf(c).isVideo || hiddenTracks.contains(c.track)) continue;
+      if (own == null ||
+          c.track < own.track ||
+          (c.track == own.track && c.offset < own.offset)) {
+        own = c;
+      }
+    }
+    final want = tl.sourceOf(base).aspect;
+    if (own != null && (tl.sourceOf(own).aspect - want).abs() <= want * 0.01) {
+      return null;
+    }
+    return want;
+  }
+
   /// [wmStart]~[wmEnd]：浮水印在合成裡看得見的那段時間（終點不大於
   /// 起點＝沒有浮水印）。只拿來決定哪些圖片/GIF 必須烘進合成，
   /// 見 [bakedImageIds]——呼叫端四個地方要送同一個值，不然「編輯器

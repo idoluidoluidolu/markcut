@@ -352,9 +352,26 @@ String? exportProxyPath(MediaSource s, {required bool hdr, bool? isHdr}) {
   return (swapped == 0 ? sources : out, swapped);
 }
 
+/// 畫布比例（寬/高）：[customAspect]（裁切算的）＞固定比例＞「原始」照
+/// [TimelineModel.canvasBase] 那一段；沒有畫面素材、或比例是壞值時 16:9。
+/// 匯出的畫布（[computeCanvasSize]）跟編輯頁的預覽框都問這裡，兩邊才會
+/// 是同一個形狀
+double canvasAspectOf(
+  TimelineModel timeline, [
+  CanvasRatio ratio = CanvasRatio.original,
+  double? customAspect,
+]) {
+  final base = timeline.canvasBase();
+  final a =
+      customAspect ??
+      ratio.value ??
+      (base == null ? 16 / 9 : timeline.sourceOf(base).aspect);
+  return a.isFinite && a > 0 ? a : 16 / 9;
+}
+
 /// 依選項計算輸出畫布大小。
-/// 比例：選了固定比例就用它，否則取「最底層（主軌）、最早出現」的影片；
-/// 長邊上限不超過素材本身（不放大）。
+/// 比例見 [canvasAspectOf]：選了固定比例就用它，否則取「最底層（主軌）、
+/// 最早出現」的影片或圖片；長邊上限不超過素材本身（不放大）。
 /// [customAspect] 是裁切算出來的自訂比例（寬/高）。有值就蓋過 [ratio]——
 /// 「裁成什麼形狀，成品就是什麼形狀」，不再塞回原本的畫布留黑邊
 (int, int) computeCanvasSize(
@@ -368,15 +385,8 @@ String? exportProxyPath(MediaSource s, {required bool hdr, bool? isHdr}) {
   // 都顯示同一個數字、匯出畫布跟預覽（直式照片）完全對不上，
   // 浮水印的位置比例整個歪掉（裝置實測回報）
   bool visual(MediaSource s) => s.isVideo || s.kind == ClipKind.image;
-  final videos =
-      timeline.clips.where((c) => visual(timeline.sourceOf(c))).toList()
-        ..sort((a, b) {
-          final t = a.track.compareTo(b.track);
-          return t != 0 ? t : a.offset.compareTo(b.offset);
-        });
-  if (videos.isEmpty) return (1920, 1080);
+  if (timeline.canvasBase() == null) return (1920, 1080);
 
-  final base = timeline.sourceOf(videos.first);
   final allVideo = timeline.sources.where(visual);
   // 有些機種／編碼在 initialize() 完成當下 size 還是 0，
   // 讓它一路傳到 ffmpeg 會變成 s=0x0 直接匯出失敗
@@ -391,8 +401,7 @@ String? exportProxyPath(MediaSource s, {required bool hdr, bool? isHdr}) {
   // 只縮不放：素材沒那麼大時放大不會更清晰，只是白白變大變慢
   if (targetLong > maxLong) targetLong = maxLong;
 
-  var aspect = customAspect ?? ratio.value ?? base.aspect; // 寬/高
-  if (!aspect.isFinite || aspect <= 0) aspect = 16 / 9;
+  final aspect = canvasAspectOf(timeline, ratio, customAspect); // 寬/高
   int w, h;
   if (aspect >= 1) {
     w = targetLong;

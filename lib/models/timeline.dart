@@ -663,6 +663,26 @@ class TimelineModel {
     return list;
   }
 
+  /// 「原始」比例的畫布照哪一段：最底層（主軌）、最早出現的畫面素材
+  ///（影片或圖片），整個專案固定這一段、不跟著播放頭換。匯出的畫布
+  ///（computeCanvasSize）、編輯頁的預覽框、合成播放器的畫框都認它——
+  /// 各認各的，預覽框就跟成品不同形狀（實機：預覽框認「播放頭底下最上層
+  /// 的影片」，上層直式那段一開始播框就跳成直的，橫式的合成畫面縮在
+  /// 中間）。沒有畫面素材回 null
+  TimelineClip? canvasBase() {
+    TimelineClip? best;
+    for (final c in clips) {
+      final s = sourceOf(c);
+      if (!s.isVideo && s.kind != ClipKind.image) continue;
+      if (best == null ||
+          c.track < best.track ||
+          (c.track == best.track && c.offset < best.offset)) {
+        best = c;
+      }
+    }
+    return best;
+  }
+
   /// 還原草稿/復原快照後，確保之後配的 id 不會撞號
   void ensureIdAbove(int maxUsed) {
     if (_idSeq <= maxUsed) _idSeq = maxUsed + 1;

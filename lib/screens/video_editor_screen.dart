@@ -419,20 +419,20 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 比例的顯示字樣
   String get _ratioLabel => _canvasRatio.label;
 
-  /// 預覽畫布的比例（寬/高）：選了固定比例就用它，否則跟著素材。
+  /// 預覽畫布的比例（寬/高）：跟匯出的畫布同一個答案（canvasAspectOf）
+  /// ——選了固定比例就用它，「原始」照最底層、最早出現的那段，不跟著
+  /// 播放頭換。以前認「播放頭底下最上層的影片」：上層直式那段一開始播，
+  /// 框就跳成直的、合成出來的橫式畫面縮在中間（實機回報）。
   /// 跟 [_buildPreview] 是同一套判定（新素材要算「會不會佔滿畫面」）
-  double get _canvasAspectNow {
-    final v = _activeVideo;
-    final ct = v == null ? null : _ctrls[v.id];
-    final base = v != null
-        ? _videoAspect(
-            ct != null && ct.value.isInitialized ? ct : null,
-            _tl.sourceOf(v),
-          )
-        : (_tl.sources.isEmpty ? 16 / 9 : _tl.sources.first.aspect);
-    final a = _ratioAspect ?? base;
-    return a > 0 ? a : 16 / 9;
-  }
+  double get _canvasAspectNow => canvasAspectOf(_tl, _canvasRatio);
+
+  /// 送給合成播放器的畫框比例（見 CompPlayer.canvasAspectFor）：讓合成
+  /// 組出來的形狀跟預覽框、匯出一樣
+  double? get _compCanvasAspect => CompPlayer.canvasAspectFor(
+    _tl,
+    fixed: _ratioAspect,
+    hiddenTracks: _compHiddenTracks,
+  );
 
   /// 這段影片在預覽上的長寬比：播放器量到的優先（含旋轉）；它還沒量到
   ///（mpv 剛開、解碼器忙著，紋理還沒起來就回報 0x0）就用匯入時探到的
@@ -2136,8 +2136,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
   /// 變好幾次——那種變化得等全部轉完再一次換，每變一次就重烘的話
   /// 畫面會重載好幾次
   String _compSig({bool withPaths = true}) => [
-    // 原始比例由原生素材決定；計算指紋不能為了讀比例啟動逐片段解碼器。
-    'canvas$_ratioAspect',
+    // 原始比例通常由原生素材決定；計算指紋不能為了讀比例啟動逐片段
+    // 解碼器（_compCanvasAspect 只看記下的素材尺寸）
+    'canvas$_compCanvasAspect',
     for (final c in _tl.clips)
       if (_tl.sourceOf(c).isVideo)
         '${withPaths ? '${_tl.sourceOf(c).previewPath}'
@@ -3670,10 +3671,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     }
     return null;
   }
-
-  /// 目前畫面上該顯示的影片片段（隱藏軌跳過，上層隱藏露出下層）
-  TimelineClip? get _activeVideo =>
-      _tl.videoAt(_position, skipTracks: _hiddenTracks);
 
   /// 馬賽克預覽 shader 程式（載不到就退回霧化，web/舊 GPU 都走得下去）。
   /// 存「程式」不存實例：多塊馬賽克同幀各建各的實例，
@@ -8822,8 +8819,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ct != null && ct.value.isInitialized ? ct : null,
       src,
     );
-    // 畫布比例照匯出那一份（「原始」比例時預覽會跟著播放頭下的影片變，
-    // 匯出跟合成是固定的第一支）：座標存的是畫布 0~1，比例要對成品
+    // 畫布比例照匯出那一份（預覽框現在也是同一份）：座標存的是畫布
+    // 0~1，比例要對成品
     final (cw, ch) = computeCanvasSize(_tl, _resolution, _canvasRatio);
     final plans = planFaceMosaics(
       buildFaceTracks(samples, duration: src.duration),
@@ -10371,7 +10368,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
     final made = await CompPlayer.build(
       _tl,
-      canvasAspect: _ratioAspect,
+      canvasAspect: _compCanvasAspect,
       texture: !Diag.playerLayer.value,
       mutedTracks: {..._mutedTracks, ..._hiddenTracks},
       hiddenTracks: _compHiddenTracks,

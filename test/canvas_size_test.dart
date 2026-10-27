@@ -6,6 +6,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:markcut/models/timeline.dart';
+import 'package:markcut/services/comp_player.dart';
 import 'package:markcut/services/video_processor.dart';
 
 TimelineModel _tl(int w, int h) {
@@ -111,6 +112,151 @@ void main() {
       expect(cw, greaterThanOrEqualTo(2), reason: 'aspect=$aspect');
       expect(ch, greaterThanOrEqualTo(2), reason: 'aspect=$aspect');
     }
+  });
+
+  group('畫布的底（預覽框、匯出、合成同一段）', () {
+    // 軌 0：橫式街景 0~6；軌 1：直式螢幕錄影 0.5~3.5（實機回報的排法）
+    TimelineModel twoTracks({
+      int baseW = 1920,
+      int baseH = 1080,
+      ClipKind baseKind = ClipKind.video,
+    }) {
+      final tl = TimelineModel();
+      tl.sources
+        ..add(
+          MediaSource(
+            path: 'base',
+            name: 'base',
+            kind: baseKind,
+            duration: 6,
+            w: baseW,
+            h: baseH,
+          ),
+        )
+        ..add(
+          MediaSource(
+            path: 'top.mp4',
+            name: 'top',
+            kind: ClipKind.video,
+            duration: 3,
+            w: 886,
+            h: 1920,
+          ),
+        );
+      tl.clips
+        ..add(
+          TimelineClip(
+            id: 1,
+            sourceIndex: 0,
+            trimStart: 0,
+            trimEnd: 6,
+            offset: 0,
+            track: 0,
+          ),
+        )
+        ..add(
+          TimelineClip(
+            id: 2,
+            sourceIndex: 1,
+            trimStart: 0,
+            trimEnd: 3,
+            offset: 0.5,
+            track: 1,
+          ),
+        );
+      return tl;
+    }
+
+    test('「原始」認最底層、最早的那段，跟上層、播放頭都無關', () {
+      final tl = twoTracks();
+      expect(tl.canvasBase()?.id, 1);
+      expect(canvasAspectOf(tl), closeTo(16 / 9, 1e-9));
+      final (w, h) = computeCanvasSize(tl, ExportResolution.original);
+      expect(w / h, closeTo(16 / 9, 0.01), reason: '匯出跟預覽框同一個形狀');
+      // 同一軌更早的那段才是底
+      tl.clips.first.offset = 1;
+      tl.sources.add(
+        MediaSource(
+          path: 'early.mp4',
+          name: 'early',
+          kind: ClipKind.video,
+          duration: 1,
+          w: 1080,
+          h: 1080,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: 3,
+          sourceIndex: 2,
+          trimStart: 0,
+          trimEnd: 1,
+          offset: 0,
+          track: 0,
+        ),
+      );
+      expect(tl.canvasBase()?.id, 3);
+      expect(canvasAspectOf(tl), closeTo(1, 1e-9));
+    });
+
+    test('固定比例、自訂比例蓋過底；壞值退 16:9；沒有畫面素材 16:9', () {
+      final tl = twoTracks();
+      expect(canvasAspectOf(tl, CanvasRatio.r9_16), closeTo(9 / 16, 1e-9));
+      expect(canvasAspectOf(tl, CanvasRatio.original, 2.0), 2.0);
+      expect(canvasAspectOf(tl, CanvasRatio.original, double.nan), 16 / 9);
+      expect(canvasAspectOf(TimelineModel()), 16 / 9);
+      expect(canvasAspectOf(TimelineModel(), CanvasRatio.r1_1), 1.0);
+    });
+
+    test('合成：底層就是影片不送比例（交給原生量播的那支檔）', () {
+      expect(CompPlayer.canvasAspectFor(twoTracks()), isNull);
+      expect(
+        CompPlayer.canvasAspectFor(twoTracks(), fixed: 9 / 16),
+        9 / 16,
+        reason: '固定比例照送',
+      );
+      // 差不到 1%（工作檔轉正縮過的捨入）也交給原生，不硬送多一條黑線
+      final tl = twoTracks();
+      tl.sources.add(
+        MediaSource(
+          path: 'same.mp4',
+          name: 'same',
+          kind: ClipKind.video,
+          duration: 6,
+          w: 1280,
+          h: 722,
+        ),
+      );
+      tl.clips.add(
+        TimelineClip(
+          id: 3,
+          sourceIndex: 2,
+          trimStart: 0,
+          trimEnd: 6,
+          offset: 0,
+          track: 2,
+        ),
+      );
+      expect(CompPlayer.canvasAspectFor(tl, hiddenTracks: {0, 1}), isNull);
+    });
+
+    test('合成：底層是圖片、或最底軌隱藏，送畫布的比例', () {
+      final img = twoTracks(
+        baseW: 1080,
+        baseH: 1920,
+        baseKind: ClipKind.image,
+      );
+      expect(
+        CompPlayer.canvasAspectFor(img),
+        closeTo(1080 / 1920, 1e-9),
+        reason: '原生只挑影片當底：會照上層直式螢幕錄影組',
+      );
+      expect(
+        CompPlayer.canvasAspectFor(twoTracks(), hiddenTracks: {0}),
+        closeTo(16 / 9, 1e-9),
+        reason: '最底軌隱藏：原生會照上層直式組，匯出照舊是橫的',
+      );
+    });
   });
 
   test('順暢度：超過 60 的來源在 4K 以上會被壓到 60', () {

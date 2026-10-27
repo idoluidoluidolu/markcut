@@ -163,6 +163,9 @@ class FakeComp {
   static const channel = MethodChannel('markcut/comp');
 
   double duration = 5.0;
+
+  /// build 回報的合成畫框（原生量的底層影片尺寸）
+  double width = 1080, height = 1920;
   int? stopAtMs;
   bool capAtEnd = false;
   int nativeMs = 0;
@@ -186,8 +189,8 @@ class FakeComp {
           return <String, dynamic>{
             'textureId': 1,
             'duration': duration,
-            'width': 1080.0,
-            'height': 1920.0,
+            'width': width,
+            'height': height,
             'ci': true,
           };
         case 'play':
