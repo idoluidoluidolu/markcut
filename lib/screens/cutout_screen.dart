@@ -45,6 +45,14 @@ class _CutoutScreenState extends State<CutoutScreen> {
   ui.Image? _photo;
   CutoutPhoto? _cut;
   ui.Image? _mask;
+
+  /// 去色後的預覽照片（邊緣那一圈解開舊背景的顏色）：遮罩、筆畫一變就
+  /// 等一下（200ms，畫筆畫時不要每一點都算）在背景重算；算好之前畫原照片
+  ui.Image? _fg;
+  String _fgKey = '';
+  int _fgSeq = 0;
+  Timer? _fgTimer;
+  Uint8List? _photoBytes;
   bool _analyzing = false;
   bool _maskBusy = false;
   int _maskSeq = 0;
@@ -99,10 +107,63 @@ class _CutoutScreenState extends State<CutoutScreen> {
 
   @override
   void dispose() {
+    _fgTimer?.cancel();
+    _fgSeq++;
     _photo?.dispose();
     _mask?.dispose();
+    _fg?.dispose();
     _bgImg?.dispose();
     super.dispose();
+  }
+
+  /// 遮罩或筆畫變了：等一下再重算去色（連續變動只算最後一次）
+  void _scheduleFg() {
+    _fgTimer?.cancel();
+    _fgTimer = Timer(const Duration(milliseconds: 200), () {
+      unawaited(_computeFg());
+    });
+  }
+
+  Future<void> _computeFg() async {
+    final photo = _photo;
+    if (photo == null || !mounted) return;
+    final strokes = [for (final s in _st.strokes) s.copy()];
+    final key =
+        '${identityHashCode(_mask)}|${strokes.length}:'
+        '${strokes.fold<int>(0, (n, s) => n + s.points.length)}';
+    if (key == _fgKey) return;
+    final seq = ++_fgSeq;
+    try {
+      _photoBytes ??= await photoRgba(photo);
+      final rgba = _photoBytes;
+      if (rgba == null || seq != _fgSeq || !mounted) return;
+      final alpha = await renderCutoutAlpha(
+        w: photo.width,
+        h: photo.height,
+        mask: _mask,
+        strokes: strokes,
+      );
+      if (seq != _fgSeq || !mounted) return;
+      final img = await decontaminatePhoto(
+        rgba: rgba,
+        alpha: alpha,
+        w: photo.width,
+        h: photo.height,
+      );
+      if (seq != _fgSeq || !mounted) {
+        img.dispose();
+        return;
+      }
+      final old = _fg;
+      setState(() {
+        _fg = img;
+        _fgKey = key;
+      });
+      old?.dispose();
+    } catch (e) {
+      // 去色只是加分：失敗就畫原照片
+      Diag.note('照片去色失敗：$e');
+    }
   }
 
   Future<void> _load() async {
@@ -168,6 +229,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
       _savedSig = _st.signature;
     });
     old?.dispose();
+    _scheduleFg();
     if (cut.subjects.isEmpty) {
       showHint(context, '沒找到主體，用筆刷「保留」塗出要留下的地方');
       setState(() => _tool = _Tool.brush);
@@ -190,6 +252,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
     final idsChanged = !_sameIds(prev.ids, _st.ids);
     setState(() => _st = prev);
     if (idsChanged) unawaited(_refreshMask());
+    _scheduleFg();
     if (prev.bg == PhotoCutBg.image && prev.bgPath != _bgImgPath) {
       unawaited(_loadBg(prev.bgPath));
     }
@@ -261,6 +324,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
       _maskBusy = false;
     });
     old?.dispose();
+    _scheduleFg();
   }
 
   Future<void> _loadBg(String? path) async {
@@ -341,6 +405,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
   }
 
   void _endStroke() {
+    if (_drawing != null) _scheduleFg();
     _drawing = null;
   }
 
@@ -378,7 +443,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
     var ok = true;
     var message = '';
     final st = _st.copy();
-    ui.Image? full, mask, bg, out;
+    ui.Image? full, mask, bg, out, fgFull;
     try {
       final path = widget.photo.path;
       full = await decodePhoto(path, maxSide: _kFullSide);
@@ -397,6 +462,26 @@ class _CutoutScreenState extends State<CutoutScreen> {
       if (st.bg == PhotoCutBg.image && st.bgPath != null) {
         bg = await decodePhoto(st.bgPath!, maxSide: long);
       }
+      // 去色在原尺寸重算（跟預覽同一套，只是解析度不同）；失敗就畫原照片
+      try {
+        final rgba = await photoRgba(full);
+        if (rgba != null) {
+          final alpha = await renderCutoutAlpha(
+            w: full.width,
+            h: full.height,
+            mask: mask,
+            strokes: st.strokes,
+          );
+          fgFull = await decontaminatePhoto(
+            rgba: rgba,
+            alpha: alpha,
+            w: full.width,
+            h: full.height,
+          );
+        }
+      } catch (e) {
+        Diag.note('照片匯出去色失敗：$e');
+      }
       out = await renderCutout(
         w: full.width,
         h: full.height,
@@ -407,6 +492,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
         color: st.color,
         bgImage: bg,
         feather: st.feather,
+        fg: fgFull,
       );
       // 透明背景要 PNG（JPEG 沒有透明）；換了背景就是一般照片，出 JPEG
       final (msg, _) = await savePhotoImage(
@@ -425,6 +511,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
       mask?.dispose();
       bg?.dispose();
       out?.dispose();
+      fgFull?.dispose();
     }
     if (!mounted) return;
     if (dialogOpen) Navigator.of(context, rootNavigator: true).pop();
@@ -535,6 +622,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
                       bgImage: _st.bg == PhotoCutBg.image ? _bgImg : null,
                       feather: _st.feather,
                       version: _paintVersion,
+                      fg: _fg,
                     ),
                   ),
                 ),
@@ -901,11 +989,15 @@ class _CutoutPreviewPainter extends CustomPainter {
     required this.bgImage,
     required this.feather,
     required this.version,
+    this.fg,
   });
 
   final Rect rect;
   final ui.Image photo;
   final ui.Image? mask;
+
+  /// 去色後的照片（還沒算好是 null，先畫原照片）
+  final ui.Image? fg;
 
   /// 還沒去背（分析中）：直接畫原圖
   final bool raw;
@@ -943,6 +1035,7 @@ class _CutoutPreviewPainter extends CustomPainter {
       color: color,
       bgImage: bgImage,
       feather: feather,
+      fg: fg,
     );
   }
 
@@ -951,6 +1044,7 @@ class _CutoutPreviewPainter extends CustomPainter {
       o.rect != rect ||
       o.photo != photo ||
       o.mask != mask ||
+      o.fg != fg ||
       o.raw != raw ||
       o.version != version ||
       o.bg != bg ||

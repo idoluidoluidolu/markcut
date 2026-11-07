@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
 
+import 'cutout_decont.dart';
 import 'cutout_mask.dart' show maskToRgba;
 
 /// 照片去背的背景
@@ -87,71 +89,15 @@ const kPhotoCutBlur = 0.03;
 /// 柔邊的最大強度（長邊的比例），滑桿 0~1 乘上它
 const kPhotoCutFeatherMax = 0.01;
 
-/// 畫去背成品：背景 → 照片乘上遮罩（自動遮罩＋修邊）。預覽與匯出共用
-/// 這一支，預覽看到的就是成品。
-///
-/// [dst]＝照片畫在哪；[mask] 是 alpha 遮罩（null＝自動的一塊都沒有，只剩
-/// 修邊「保留」塗出來的）。透明背景這裡什麼都不畫（預覽自己墊棋盤格）
-void paintCutout(
+/// 遮罩那一層的內容：自動遮罩＋修邊筆畫（白色、alpha＝遮罩）。成品、
+/// 去色要的最終遮罩（[renderCutoutAlpha]）都畫這一支
+void _paintMaskContent(
   Canvas canvas,
-  Rect dst, {
-  required ui.Image photo,
-  required ui.Image? mask,
-  required List<CutStroke> strokes,
-  required PhotoCutBg bg,
-  int color = 0xFFFFFFFF,
-  ui.Image? bgImage,
-  double feather = 0,
-}) {
-  final long = math.max(dst.width, dst.height);
+  Rect dst,
+  ui.Image? mask,
+  List<CutStroke> strokes,
+) {
   final short = math.min(dst.width, dst.height);
-  final photoSrc = Rect.fromLTWH(
-    0,
-    0,
-    photo.width.toDouble(),
-    photo.height.toDouble(),
-  );
-  final hq = Paint()..filterQuality = FilterQuality.high;
-  canvas.save();
-  canvas.clipRect(dst);
-  switch (bg) {
-    case PhotoCutBg.clear:
-      break;
-    case PhotoCutBg.color:
-      canvas.drawRect(dst, Paint()..color = Color(color));
-    case PhotoCutBg.blur:
-      final s = long * kPhotoCutBlur;
-      canvas.saveLayer(
-        dst,
-        Paint()
-          ..imageFilter = ui.ImageFilter.blur(
-            sigmaX: s,
-            sigmaY: s,
-            tileMode: TileMode.clamp,
-          ),
-      );
-      canvas.drawImageRect(photo, photoSrc, dst, hq);
-      canvas.restore();
-    case PhotoCutBg.image:
-      final b = bgImage;
-      if (b != null) {
-        // 鋪滿（cover）：比例不同就裁掉多的那一邊
-        final bw = b.width.toDouble(), bh = b.height.toDouble();
-        final k = math.max(dst.width / bw, dst.height / bh);
-        final sw = dst.width / k, sh = dst.height / k;
-        final src = Rect.fromLTWH((bw - sw) / 2, (bh - sh) / 2, sw, sh);
-        canvas.drawImageRect(b, src, dst, hq);
-      }
-  }
-  // 主體：照片一層，遮罩一層用 dstIn 疊上去（只留遮罩不透明的地方）
-  canvas.saveLayer(dst, Paint());
-  canvas.drawImageRect(photo, photoSrc, dst, hq);
-  final maskPaint = Paint()..blendMode = BlendMode.dstIn;
-  if (feather > 0.001) {
-    final f = long * kPhotoCutFeatherMax * feather;
-    maskPaint.imageFilter = ui.ImageFilter.blur(sigmaX: f, sigmaY: f);
-  }
-  canvas.saveLayer(dst, maskPaint);
   final m = mask;
   if (m != null) {
     canvas.drawImageRect(
@@ -194,9 +140,177 @@ void paintCutout(
     }
     canvas.drawPath(path, p);
   }
+}
+
+/// 畫去背成品：背景 → 照片乘上遮罩（自動遮罩＋修邊）。預覽與匯出共用
+/// 這一支，預覽看到的就是成品。
+///
+/// [dst]＝照片畫在哪；[mask] 是 alpha 遮罩（null＝自動的一塊都沒有，只剩
+/// 修邊「保留」塗出來的）。[fg]＝去色後的照片（[decontaminatePhoto]，邊緣
+/// 那一圈不帶舊背景的顏色；還沒算好就畫原照片）。透明背景這裡什麼都不畫
+///（預覽自己墊棋盤格）。
+///
+/// 柔邊只往內：遮罩乘上「模糊過的遮罩」——主體外面還是 0（不會把舊背景
+/// 往外帶出一圈光暈），裡面靠邊的地方漸漸變透明
+void paintCutout(
+  Canvas canvas,
+  Rect dst, {
+  required ui.Image photo,
+  required ui.Image? mask,
+  required List<CutStroke> strokes,
+  required PhotoCutBg bg,
+  int color = 0xFFFFFFFF,
+  ui.Image? bgImage,
+  double feather = 0,
+  ui.Image? fg,
+}) {
+  final long = math.max(dst.width, dst.height);
+  final photoSrc = Rect.fromLTWH(
+    0,
+    0,
+    photo.width.toDouble(),
+    photo.height.toDouble(),
+  );
+  final hq = Paint()..filterQuality = FilterQuality.high;
+  canvas.save();
+  canvas.clipRect(dst);
+  switch (bg) {
+    case PhotoCutBg.clear:
+      break;
+    case PhotoCutBg.color:
+      canvas.drawRect(dst, Paint()..color = Color(color));
+    case PhotoCutBg.blur:
+      final s = long * kPhotoCutBlur;
+      canvas.saveLayer(
+        dst,
+        Paint()
+          ..imageFilter = ui.ImageFilter.blur(
+            sigmaX: s,
+            sigmaY: s,
+            tileMode: TileMode.clamp,
+          ),
+      );
+      canvas.drawImageRect(photo, photoSrc, dst, hq);
+      canvas.restore();
+    case PhotoCutBg.image:
+      final b = bgImage;
+      if (b != null) {
+        // 鋪滿（cover）：比例不同就裁掉多的那一邊
+        final bw = b.width.toDouble(), bh = b.height.toDouble();
+        final k = math.max(dst.width / bw, dst.height / bh);
+        final sw = dst.width / k, sh = dst.height / k;
+        final src = Rect.fromLTWH((bw - sw) / 2, (bh - sh) / 2, sw, sh);
+        canvas.drawImageRect(b, src, dst, hq);
+      }
+  }
+  // 主體：照片（去色後的）一層，遮罩一層用 dstIn 疊上去（只留遮罩不透明
+  // 的地方）；有柔邊再疊一層模糊過的遮罩（兩層相乘＝只往內柔）
+  canvas.saveLayer(dst, Paint());
+  final face = fg ?? photo;
+  canvas.drawImageRect(
+    face,
+    Rect.fromLTWH(0, 0, face.width.toDouble(), face.height.toDouble()),
+    dst,
+    hq,
+  );
+  canvas.saveLayer(dst, Paint()..blendMode = BlendMode.dstIn);
+  _paintMaskContent(canvas, dst, mask, strokes);
+  canvas.restore();
+  if (feather > 0.001) {
+    final f = long * kPhotoCutFeatherMax * feather;
+    canvas.saveLayer(
+      dst,
+      Paint()
+        ..blendMode = BlendMode.dstIn
+        // clamp：主體碰到照片邊的地方（例如下半身被切掉）不會往邊緣漸透明
+        ..imageFilter = ui.ImageFilter.blur(
+          sigmaX: f,
+          sigmaY: f,
+          tileMode: TileMode.clamp,
+        ),
+    );
+    _paintMaskContent(canvas, dst, mask, strokes);
+    canvas.restore();
+  }
   canvas.restore();
   canvas.restore();
+}
+
+/// 最終遮罩（自動遮罩＋修邊筆畫，沒有柔邊）攤成 [w]×[h] 位元組——去色要的 α
+Future<Uint8List> renderCutoutAlpha({
+  required int w,
+  required int h,
+  required ui.Image? mask,
+  required List<CutStroke> strokes,
+}) async {
+  final rec = ui.PictureRecorder();
+  final canvas = Canvas(rec);
+  final dst = Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble());
+  canvas.saveLayer(dst, Paint());
+  _paintMaskContent(canvas, dst, mask, strokes);
   canvas.restore();
+  final pic = rec.endRecording();
+  final img = await pic.toImage(w, h);
+  pic.dispose();
+  try {
+    final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+    final out = Uint8List(w * h);
+    if (bd == null) return out;
+    final b = bd.buffer.asUint8List(bd.offsetInBytes, bd.lengthInBytes);
+    for (var i = 0; i < w * h; i++) {
+      out[i] = b[i * 4 + 3];
+    }
+    return out;
+  } finally {
+    img.dispose();
+  }
+}
+
+/// 照片的 RGBA 位元組（去色要讀；一張照片讀一次就好）
+Future<Uint8List?> photoRgba(ui.Image photo) async {
+  final bd = await photo.toByteData(format: ui.ImageByteFormat.rawRgba);
+  if (bd == null) return null;
+  return bd.buffer.asUint8List(bd.offsetInBytes, bd.lengthInBytes);
+}
+
+/// 去色後的照片（邊緣那一圈解開舊背景的顏色，見 decontaminateRgba）。
+/// 在背景 isolate 算；[rgba]＝[photoRgba] 讀出來的、[alpha]＝[renderCutoutAlpha]
+Future<ui.Image> decontaminatePhoto({
+  required Uint8List rgba,
+  required Uint8List alpha,
+  required int w,
+  required int h,
+}) async {
+  final src = TransferableTypedData.fromList([rgba]);
+  final a = TransferableTypedData.fromList([alpha]);
+  final outT = await Isolate.run(() {
+    final out = decontaminateRgba(
+      src.materialize().asUint8List(),
+      a.materialize().asUint8List(),
+      w,
+      h,
+    );
+    return TransferableTypedData.fromList([out]);
+  });
+  final out = outT.materialize().asUint8List();
+  final buf = await ui.ImmutableBuffer.fromUint8List(out);
+  final desc = ui.ImageDescriptor.raw(
+    buf,
+    width: w,
+    height: h,
+    pixelFormat: ui.PixelFormat.rgba8888,
+  );
+  try {
+    final codec = await desc.instantiateCodec();
+    try {
+      return (await codec.getNextFrame()).image;
+    } finally {
+      codec.dispose();
+    }
+  } finally {
+    desc.dispose();
+    buf.dispose();
+  }
 }
 
 /// 成品（原尺寸）：[w]×[h] 的影像，透明背景就帶 alpha
@@ -210,6 +324,7 @@ Future<ui.Image> renderCutout({
   int color = 0xFFFFFFFF,
   ui.Image? bgImage,
   double feather = 0,
+  ui.Image? fg,
 }) async {
   final rec = ui.PictureRecorder();
   final canvas = Canvas(rec);
@@ -223,6 +338,7 @@ Future<ui.Image> renderCutout({
     color: color,
     bgImage: bgImage,
     feather: feather,
+    fg: fg,
   );
   final pic = rec.endRecording();
   try {
