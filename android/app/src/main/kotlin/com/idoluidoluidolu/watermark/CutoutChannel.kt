@@ -142,11 +142,35 @@ internal class CutoutChannel(
                     // 主體的編號才對得上（解析度不同，主體清單、順序都可能不同）
                     val analyzeSide = (call.argument<Number>("analyzeSide") ?: maxOf(maxSide, 1024))
                         .toInt().coerceIn(256, 4096)
+                    // 精修過（BiRefNet）：要的是精修後的遮罩；快取沒了就拿 model 重算
+                    val refineModel = if (call.argument<Boolean>("refined") == true) {
+                        call.argument<String>("model")
+                    } else {
+                        null
+                    }
                     submit(photoExec, "主體遮罩") {
                         try {
-                            ok(photoMask(path, ids, maxSide, analyzeSide))
+                            ok(photoMask(path, ids, maxSide, analyzeSide, refineModel))
                         } catch (e: Throwable) {
                             fail("主體遮罩", e)
+                        }
+                    }
+                }
+                "refinePhoto" -> {
+                    val path = call.argument<String>("path")
+                    val model = call.argument<String>("model")
+                    if (path.isNullOrEmpty() || model.isNullOrEmpty()) {
+                        result.success(null)
+                        return@setMethodCallHandler
+                    }
+                    val ids = (call.argument<List<Any?>>("ids") ?: emptyList()).mapNotNull { (it as? Number)?.toInt() }
+                    val previewSide = (call.argument<Number>("previewSide") ?: 1600).toInt().coerceIn(16, 4096)
+                    val analyzeSide = (call.argument<Number>("analyzeSide") ?: 2048).toInt().coerceIn(256, 4096)
+                    submit(photoExec, "精修") {
+                        try {
+                            ok(refinePhoto(path, model, ids, previewSide, analyzeSide))
+                        } catch (e: Throwable) {
+                            fail("精修", e)
                         }
                     }
                 }
@@ -195,6 +219,14 @@ internal class CutoutChannel(
     /// 兩條工作緒不再接新的（已排的照跑完）
     fun dispose() {
         for (f in cancelled.values) f.set(true)
+        try {
+            photoExec.execute {
+                try {
+                    refineSession?.close()
+                } catch (_: Throwable) {}
+                refineSession = null
+            }
+        } catch (_: RejectedExecutionException) {}
         photoExec.shutdown()
         // 影片工作緒收完才放掉 MODNet（正在算的那一格還在用）
         try {
@@ -254,6 +286,7 @@ internal class CutoutChannel(
         cachePath = null
         cacheSubjects = emptyList()
         cachePerson = null
+        cacheMatte = null
         cacheGuide = rgbOf(bmp)
         var note: String? = null
         try {
@@ -329,20 +362,103 @@ internal class CutoutChannel(
         )
     }
 
-    private fun photoMask(path: String, ids: List<Int>, maxSide: Int, analyzeSide: Int): Map<String, Any?>? {
+    private fun photoMask(
+        path: String,
+        ids: List<Int>,
+        maxSide: Int,
+        analyzeSide: Int,
+        refineModel: String? = null,
+    ): Map<String, Any?>? {
         if (cachePath != path) {
             analyzePhoto(path, analyzeSide, 64) ?: return null
         }
         val w = cacheW
         val h = cacheH
         val (ow, oh) = fit(w, h, maxSide)
+        var full = baseMask(ids)
+        if (refineModel != null && ids.isNotEmpty()) {
+            val matte = cacheMatte ?: runBiRefNet(refineModel)
+            if (matte != null) full = fusedBytes(full, matte, w, h)
+        }
+        return mapOf("w" to ow, "h" to oh, "mask" to resize(full, w, h, ow, oh))
+    }
+
+    /// 選的這幾個主體的遮罩（快取那張照片的分析解析度）
+    private fun baseMask(ids: List<Int>): ByteArray {
+        val w = cacheW
+        val h = cacheH
         val person = cachePerson
-        val full = when {
+        return when {
             person != null -> if (ids.isEmpty()) ByteArray(w * h) else person
             ids.isEmpty() -> ByteArray(w * h)
             else -> refineFull(composeSubjects(cacheSubjects, ids, w, h), w, h)
         }
-        return mapOf("w" to ow, "h" to oh, "mask" to resize(full, w, h, ow, oh))
+    }
+
+    // ===== 精修（BiRefNet-lite，模型用到才下載，見 lib/services/model_store.dart）=====
+
+    /// BiRefNet 對快取那張照片的 matte（分析解析度、0~1）；換照片就清掉
+    private var cacheMatte: FloatArray? = null
+    private var refineSession: ai.onnxruntime.OrtSession? = null
+    private var refineSessionPath: String? = null
+
+    /// 精修：BiRefNet 看整張照片（1024×1024），跟選的主體遮罩融合（同影片
+    /// 那套：主體核心一定保留、離主體太遠的不要、中間照 BiRefNet——髮絲、
+    /// 毛邊）。BiRefNet 認的主體跟選的不一樣（IoU < 0.6）就不用，回 ok=false
+    private fun refinePhoto(
+        path: String,
+        model: String,
+        ids: List<Int>,
+        previewSide: Int,
+        analyzeSide: Int,
+    ): Map<String, Any?>? {
+        if (cachePath != path) {
+            analyzePhoto(path, analyzeSide, 64) ?: return null
+        }
+        val w = cacheW
+        val h = cacheH
+        val matte = cacheMatte ?: runBiRefNet(model) ?: return null
+        val base = baseMask(ids)
+        val baseF = FloatArray(w * h) { (base[it].toInt() and 0xFF) / 255f }
+        val score = CutoutMatting.iou(baseF, matte)
+        if (score < 0.6) return mapOf("ok" to false, "iou" to score)
+        val (pw, ph) = fit(w, h, previewSide)
+        val fused = fusedBytes(base, matte, w, h)
+        return mapOf(
+            "ok" to true, "iou" to score,
+            "w" to pw, "h" to ph, "mask" to resize(fused, w, h, pw, ph),
+        )
+    }
+
+    private fun fusedBytes(base: ByteArray, matte: FloatArray, w: Int, h: Int): ByteArray {
+        val baseF = FloatArray(w * h) { (base[it].toInt() and 0xFF) / 255f }
+        val long = maxOf(w, h)
+        val f = CutoutMatting.fuse(
+            baseF, matte, w, h,
+            core = maxOf(2, (long * 0.004).toInt()),
+            reach = maxOf(6, (long * 0.05).toInt()),
+        )
+        return ByteArray(w * h) { (f[it] * 255f + 0.5f).toInt().coerceIn(0, 255).toByte() }
+    }
+
+    /// 快取那張照片跑 BiRefNet → 分析解析度的 matte（記在 [cacheMatte]）。
+    /// 模型檔一百多 MB：ORT 直接從檔案載（不讀進 Java 堆積），載一次重複用
+    private fun runBiRefNet(model: String): FloatArray? {
+        val guide = cacheGuide ?: return null
+        val w = cacheW
+        val h = cacheH
+        if (guide.size != w * h * 3) return null
+        val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
+        val session = refineSession.takeIf { refineSessionPath == model } ?: run {
+            refineSession?.close()
+            val opts = ai.onnxruntime.OrtSession.SessionOptions()
+            opts.setIntraOpNumThreads(maxOf(1, minOf(4, Runtime.getRuntime().availableProcessors())))
+            env.createSession(model, opts).also {
+                refineSession = it
+                refineSessionPath = model
+            }
+        }
+        return CutoutMatting.birefnet(env, session, guide, w, h).also { cacheMatte = it }
     }
 
     /// 主體分割：每個主體的外框與框內信心值。拿不到（模型沒下載、沒有

@@ -43,7 +43,11 @@ class PhotoCutState {
     required this.color,
     required this.bgPath,
     required this.feather,
+    this.refined = false,
   });
+
+  /// 精修過（BiRefNet 的 matte 跟主體遮罩融合）
+  final bool refined;
 
   PhotoCutState copy() => PhotoCutState(
     ids: Set.of(ids),
@@ -52,13 +56,14 @@ class PhotoCutState {
     color: color,
     bgPath: bgPath,
     feather: feather,
+    refined: refined,
   );
 
   /// 比對有沒有改過（離開要不要問）
   String get signature =>
       '${(ids.toList()..sort()).join(',')}|${strokes.length}:'
       '${strokes.fold<int>(0, (n, s) => n + s.points.length)}|'
-      '${bg.index}|$color|$bgPath|${feather.toStringAsFixed(3)}';
+      '${bg.index}|$color|$bgPath|${feather.toStringAsFixed(3)}|$refined';
 }
 
 /// 遮罩（寬×高位元組）→ 可以拿來畫的 alpha 影像

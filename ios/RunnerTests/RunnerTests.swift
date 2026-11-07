@@ -3054,6 +3054,24 @@ extension RunnerTests {
     }
   }
 
+  /// 精修的融合（同 Android CutoutMattingTest）：核心的洞補回來、髮絲照 matte、遠處不要
+  func testCutoutFuseKeepsCoreDropsFar() {
+    let w = 40
+    let coarse = (0..<w).map { (10...29).contains($0) ? Float(1) : 0 }
+    let matte = (0..<w).map { x -> Float in
+      if (15...24).contains(x) { return 0 }
+      if (6...9).contains(x) { return 0.4 }
+      if x == 0 { return 0.9 }
+      return (10...29).contains(x) ? 1 : 0
+    }
+    let out = MCCutoutRefine.fuse(coarse, matte, w, 1, core: 2, reach: 5)
+    XCTAssertEqual(out[20], 1, "核心的洞補回來")
+    XCTAssertEqual(out[7], 0.4, accuracy: 1e-6, "髮絲照 matte")
+    XCTAssertEqual(out[0], 0, "遠處不要")
+    XCTAssertEqual(MCCutoutRefine.iou([1, 1, 0, 0], [1, 0, 1, 0]), 1.0 / 3, accuracy: 1e-9)
+    XCTAssertEqual(MCCutout.resizeBytes([0, 255], 2, 1, 2, 1), [0, 255])
+  }
+
   /// 去色只動邊帶：遮罩全是人時畫面一個位元都不動
   func testCutoutDecontKeepsOpaqueFrame() {
     let w = 16

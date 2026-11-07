@@ -77,6 +77,60 @@ internal class CutoutMatting(model: ByteArray) : AutoCloseable {
     }
 
     companion object {
+        /// BiRefNet-lite（照片精修，MIT；模型用到才下載）：[rgb]（RGB 交錯
+        /// [w]×[h]）面積平均縮成 1024×1024、ImageNet 正規化 → logits 過 sigmoid →
+        /// 放大回 [w]×[h] 的 0~1 matte
+        fun birefnet(
+            env: OrtEnvironment,
+            session: OrtSession,
+            rgb: ByteArray,
+            w: Int,
+            h: Int,
+        ): FloatArray {
+            val s = 1024
+            val plane = s * s
+            val input = FloatArray(3 * plane)
+            val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
+            val std = floatArrayOf(0.229f, 0.224f, 0.225f)
+            val sx = w.toDouble() / s
+            val sy = h.toDouble() / s
+            for (oy in 0 until s) {
+                val y0 = (oy * sy).toInt()
+                val y1 = max(y0 + 1, min(h, kotlin.math.ceil((oy + 1) * sy).toInt()))
+                for (ox in 0 until s) {
+                    val x0 = (ox * sx).toInt()
+                    val x1 = max(x0 + 1, min(w, kotlin.math.ceil((ox + 1) * sx).toInt()))
+                    var r = 0
+                    var g = 0
+                    var b = 0
+                    for (y in y0 until y1) {
+                        for (x in x0 until x1) {
+                            val i = (y * w + x) * 3
+                            r += rgb[i].toInt() and 0xFF
+                            g += rgb[i + 1].toInt() and 0xFF
+                            b += rgb[i + 2].toInt() and 0xFF
+                        }
+                    }
+                    val n = ((y1 - y0) * (x1 - x0)) * 255f
+                    val o = oy * s + ox
+                    input[o] = (r / n - mean[0]) / std[0]
+                    input[plane + o] = (g / n - mean[1]) / std[1]
+                    input[2 * plane + o] = (b / n - mean[2]) / std[2]
+                }
+            }
+            val shape = longArrayOf(1, 3, s.toLong(), s.toLong())
+            val out = FloatArray(plane)
+            OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape).use { t ->
+                session.run(mapOf(session.inputNames.first() to t)).use { res ->
+                    val buf = (res[0] as OnnxTensor).floatBuffer
+                    buf.get(out, 0, min(plane, buf.remaining()))
+                }
+            }
+            // 輸出是 logits
+            for (i in out.indices) out[i] = (1.0 / (1.0 + kotlin.math.exp(-out[i].toDouble()))).toFloat()
+            return CutoutRefine.upscaleBilinear(out, s, s, w, h)
+        }
+
         /// 兩張遮罩「是人」（≥0.5）的 IoU；兩張都沒有人回 0
         fun iou(a: FloatArray, b: FloatArray): Double {
             var inter = 0

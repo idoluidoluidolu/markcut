@@ -12,6 +12,24 @@ class CutoutSubject {
   const CutoutSubject(this.id, this.box);
 }
 
+/// 精修的結果：精修後的遮罩（[w]×[h]）；[mismatch]＝模型認的主體跟選的
+/// 不一樣，這張不適合精修（[unsuitable]）
+class CutoutRefineResult {
+  const CutoutRefineResult(Uint8List this.mask, this.w, this.h)
+    : mismatch = false;
+  const CutoutRefineResult._unsuitable()
+    : mask = null,
+      w = 0,
+      h = 0,
+      mismatch = true;
+
+  static const unsuitable = CutoutRefineResult._unsuitable();
+
+  final Uint8List? mask;
+  final int w, h;
+  final bool mismatch;
+}
+
 /// 一張照片的去背分析結果。
 ///
 /// [mask] 是「全部主體」的遮罩（[w]×[h] 位元組，0＝背景、255＝主體），
@@ -187,6 +205,7 @@ class CutoutDetect {
     List<int> ids, {
     int maxSide = 4096,
     int? analyzeSide,
+    String? refineModel,
   }) async {
     if (kIsWeb || path.isEmpty) return null;
     try {
@@ -195,6 +214,9 @@ class CutoutDetect {
         'ids': ids,
         'maxSide': maxSide,
         'analyzeSide': ?analyzeSide,
+        // 精修過：原生端用 BiRefNet 的 matte 融合（快取沒了拿 model 重算）
+        if (refineModel != null) 'refined': true,
+        'model': ?refineModel,
       });
       if (r == null) return null;
       final w = (r['w'] as num?)?.toInt() ?? 0;
@@ -209,6 +231,45 @@ class CutoutDetect {
     } on PlatformException catch (e) {
       lastError = e.message ?? e.code;
       Diag.ev('照片去背遮罩失敗：$lastError');
+      return null;
+    }
+  }
+
+  /// 精修（BiRefNet）：模型看整張照片，跟選的主體遮罩融合——髮絲、毛邊。
+  /// [model]＝ModelStore 下載好的路徑。BiRefNet 認的主體跟選的不一樣回
+  /// [CutoutRefineResult.unsuitable]；做不了回 null（原因在 [lastError]）
+  static Future<CutoutRefineResult?> refinePhoto(
+    String path,
+    List<int> ids, {
+    required String model,
+    int previewSide = 1600,
+    int? analyzeSide,
+  }) async {
+    if (kIsWeb || path.isEmpty) return null;
+    lastError = null;
+    try {
+      final r = await _ch.invokeMapMethod<String, Object?>('refinePhoto', {
+        'path': path,
+        'ids': ids,
+        'model': model,
+        'previewSide': previewSide,
+        'analyzeSide': ?analyzeSide,
+      });
+      if (r == null) return null;
+      if (r['ok'] != true) return CutoutRefineResult.unsuitable;
+      final w = (r['w'] as num?)?.toInt() ?? 0;
+      final h = (r['h'] as num?)?.toInt() ?? 0;
+      final mask = r['mask'];
+      if (w <= 0 || h <= 0 || mask is! Uint8List || mask.length != w * h) {
+        lastError = '回傳的遮罩尺寸不對（$w×$h）';
+        return null;
+      }
+      return CutoutRefineResult(mask, w, h);
+    } on MissingPluginException {
+      return null;
+    } on PlatformException catch (e) {
+      lastError = e.message ?? e.code;
+      Diag.ev('照片精修失敗：$lastError');
       return null;
     }
   }

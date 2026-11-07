@@ -1,5 +1,6 @@
 import AVFoundation
 import Compression
+import CoreML
 import MetalKit
 import MetricKit
 import CoreImage
@@ -15400,11 +15401,34 @@ extension AppDelegate {
         let maxSide = args["maxSide"] as? Int ?? 4096
         // 快取被別張照片換掉時重新分析要用當初的大小（主體編號才對得上）
         let analyzeSide = args["analyzeSide"] as? Int ?? max(maxSide, 1024)
+        // 精修過（BiRefNet）：要精修後的遮罩；快取沒了拿 model 重算
+        let refineModel = (args["refined"] as? Bool ?? false) ? args["model"] as? String : nil
         AppDelegate.cutoutQueue.async {
           let r: Result<[String: Any]?, Error> = autoreleasepool {
             Result {
               try MCCutout.photoMask(
-                path: path, ids: ids, maxSide: maxSide, analyzeSide: analyzeSide)
+                path: path, ids: ids, maxSide: maxSide, analyzeSide: analyzeSide,
+                refineModel: refineModel)
+            }
+          }
+          reply(r)
+        }
+      case "refinePhoto":
+        guard let path = args["path"] as? String, !path.isEmpty,
+          let model = args["model"] as? String, !model.isEmpty
+        else {
+          result(nil)
+          return
+        }
+        let ids = (args["ids"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }
+        let previewSide = args["previewSide"] as? Int ?? 1600
+        let analyzeSide = args["analyzeSide"] as? Int ?? 4096
+        AppDelegate.cutoutQueue.async {
+          let r: Result<[String: Any]?, Error> = autoreleasepool {
+            Result {
+              try MCCutout.refinePhoto(
+                path: path, model: model, ids: ids, previewSide: previewSide,
+                analyzeSide: analyzeSide)
             }
           }
           reply(r)
@@ -15469,10 +15493,14 @@ enum MCCutout {
   private static var cacheHandler: VNImageRequestHandler?
   private static var cacheObservation: AnyObject?
   private static var cachePersonMask: CIImage?
+  /// 分析的那張照片本身（精修要餵 BiRefNet）、BiRefNet 對它的 matte
+  ///（分析解析度、0~1；換照片就清掉）
+  private static var cacheImage: CGImage?
+  private static var cacheMatte: [Float]?
 
   private static func store(
     path: String, size: CGSize, handler: VNImageRequestHandler,
-    observation: AnyObject?, person: CIImage?
+    observation: AnyObject?, person: CIImage?, image: CGImage? = nil
   ) {
     cacheLock.lock()
     defer { cacheLock.unlock() }
@@ -15481,6 +15509,8 @@ enum MCCutout {
     cacheHandler = handler
     cacheObservation = observation
     cachePersonMask = person
+    cacheImage = image
+    cacheMatte = nil
   }
 
   /// 等比縮到長邊不超過 [maxSide]（不放大）
@@ -15616,7 +15646,8 @@ enum MCCutout {
       let req = VNGenerateForegroundInstanceMaskRequest()
       try handler.perform([req])
       let obs = req.results?.first
-      store(path: path, size: size, handler: handler, observation: obs, person: nil)
+      store(
+        path: path, size: size, handler: handler, observation: obs, person: nil, image: cg)
       out["kind"] = "subject"
       guard let o = obs, !o.allInstances.isEmpty else {
         out["mask"] = FlutterStandardTypedData(bytes: Data(count: pw * ph))
@@ -15666,25 +15697,43 @@ enum MCCutout {
   }
 
   static func photoMask(
-    path: String, ids: [Int], maxSide: Int, analyzeSide: Int
+    path: String, ids: [Int], maxSide: Int, analyzeSide: Int, refineModel: String? = nil
   ) throws -> [String: Any]? {
+    guard try ensureCache(path: path, analyzeSide: analyzeSide) else { return nil }
+    cacheLock.lock()
+    let size = cacheSize
+    cacheLock.unlock()
+    let (w, hh) = fit(size, maxSide)
+    if let model = refineModel, !ids.isEmpty, #available(iOS 17.0, *) {
+      if let r = try refined(model: model, ids: ids), r.ok {
+        return [
+          "w": w, "h": hh,
+          "mask": FlutterStandardTypedData(
+            bytes: Data(resizeBytes(r.mask, r.w, r.h, w, hh))),
+        ]
+      }
+    }
+    guard let mask = try baseMask(ids: ids, w: w, h: hh) else { return nil }
+    return ["w": w, "h": hh, "mask": FlutterStandardTypedData(bytes: mask)]
+  }
+
+  /// 快取是不是這張照片；不是就照當初分析的大小重新分析（主體編號才對得上）
+  static func ensureCache(path: String, analyzeSide: Int) throws -> Bool {
     cacheLock.lock()
     let hit = cachePath == path && cacheHandler != nil
     cacheLock.unlock()
-    if !hit {
-      // 沒分析過（或被別張蓋掉了）：照當初分析的大小重新分析一次
-      guard try analyzePhoto(path: path, maxSide: analyzeSide, previewSide: 64) != nil
-      else { return nil }
-    }
+    if hit { return true }
+    return try analyzePhoto(path: path, maxSide: analyzeSide, previewSide: 64) != nil
+  }
+
+  /// 選的這幾個主體的遮罩（[w]×[h] 位元組；快取那張照片）
+  static func baseMask(ids: [Int], w: Int, h hh: Int) throws -> Data? {
     cacheLock.lock()
     let handler = cacheHandler
     let obs = cacheObservation
     let person = cachePersonMask
-    let size = cacheSize
-    let same = cachePath == path
     cacheLock.unlock()
-    guard same, let h = handler else { return nil }
-    let (w, hh) = fit(size, maxSide)
+    guard let h = handler else { return nil }
     var mask = Data(count: w * hh)
     if let person = person {
       // 只認人的那條路只有一個主體：有選就是它
@@ -15697,7 +15746,145 @@ enum MCCutout {
         mask = gray(CIImage(cvPixelBuffer: pb), w: w, h: hh)
       }
     }
-    return ["w": w, "h": hh, "mask": FlutterStandardTypedData(bytes: mask)]
+    return mask
+  }
+
+  // ===== 精修（BiRefNet-lite Core ML，模型用到才下載，見 lib/services/model_store.dart）=====
+
+  /// 融合在這個長邊上做（BiRefNet 輸出本來就只有 1024，再大沒有意義）
+  static let refineLong = 2048
+  private static var birefnet: MLModel?
+  private static var birefnetPath: String?
+
+  /// 精修：BiRefNet 看整張照片（1024×1024），跟選的主體遮罩融合（同影片那套：
+  /// 主體核心一定保留、離主體太遠的不要、中間照 BiRefNet——髮絲、毛邊）。
+  /// BiRefNet 認的主體跟選的不一樣（IoU < 0.6）回 ok=false
+  static func refinePhoto(
+    path: String, model: String, ids: [Int], previewSide: Int, analyzeSide: Int
+  ) throws -> [String: Any]? {
+    guard #available(iOS 17.0, *) else { throw Failure("精修｜要 iOS 17 以上") }
+    guard try ensureCache(path: path, analyzeSide: analyzeSide) else { return nil }
+    guard let r = try refined(model: model, ids: ids) else { return nil }
+    if !r.ok { return ["ok": false, "iou": r.iou] }
+    cacheLock.lock()
+    let size = cacheSize
+    cacheLock.unlock()
+    let (pw, ph) = fit(size, previewSide)
+    return [
+      "ok": true, "iou": r.iou, "w": pw, "h": ph,
+      "mask": FlutterStandardTypedData(bytes: Data(resizeBytes(r.mask, r.w, r.h, pw, ph))),
+    ]
+  }
+
+  /// 選的主體 × BiRefNet 融合（[refineLong] 的解析度）
+  @available(iOS 17.0, *)
+  static func refined(model: String, ids: [Int]) throws
+    -> (ok: Bool, iou: Double, mask: [UInt8], w: Int, h: Int)?
+  {
+    cacheLock.lock()
+    let size = cacheSize
+    cacheLock.unlock()
+    let (fw, fh) = fit(size, refineLong)
+    guard let base = try baseMask(ids: ids, w: fw, h: fh) else { return nil }
+    let bm = try matte(model: model, w: fw, h: fh)
+    let baseF = base.map { Float($0) / 255 }
+    let score = MCCutoutRefine.iou(baseF, bm)
+    if score < 0.6 { return (false, score, [], fw, fh) }
+    let long = max(fw, fh)
+    let fused = MCCutoutRefine.fuse(
+      baseF, bm, fw, fh, core: max(2, Int(Double(long) * 0.004)),
+      reach: max(6, Int(Double(long) * 0.05)))
+    return (true, score, fused.map { UInt8(max(0, min(255, Int($0 * 255 + 0.5)))) }, fw, fh)
+  }
+
+  /// BiRefNet 對快取照片的 matte，縮到 [w]×[h]（記著，同一張照片不重算）
+  @available(iOS 17.0, *)
+  static func matte(model: String, w: Int, h: Int) throws -> [Float] {
+    cacheLock.lock()
+    let cached = cacheMatte
+    let image = cacheImage
+    cacheLock.unlock()
+    if let c = cached, c.count == w * h { return c }
+    guard let cg = image else { throw Failure("精修｜照片不在快取裡") }
+    let ml = try birefnetModel(path: model)
+    let s = 1024
+    // 照片畫成 1024×1024（拉伸）的 RGBA，再換成 ImageNet 正規化的 NCHW
+    var rgba = [UInt8](repeating: 0, count: s * s * 4)
+    let drawn: Bool = rgba.withUnsafeMutableBytes { buf in
+      guard
+        let ctx = CGContext(
+          data: buf.baseAddress, width: s, height: s, bitsPerComponent: 8, bytesPerRow: s * 4,
+          space: CGColorSpace(name: CGColorSpace.sRGB)!,
+          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+      else { return false }
+      ctx.interpolationQuality = .high
+      ctx.draw(cg, in: CGRect(x: 0, y: 0, width: s, height: s))
+      return true
+    }
+    if !drawn { throw Failure("精修｜配不出畫布") }
+    let arr = try MLMultiArray(shape: [1, 3, NSNumber(value: s), NSNumber(value: s)], dataType: .float32)
+    let p = arr.dataPointer.bindMemory(to: Float.self, capacity: 3 * s * s)
+    let mean: [Float] = [0.485, 0.456, 0.406]
+    let std: [Float] = [0.229, 0.224, 0.225]
+    let plane = s * s
+    for i in 0..<plane {
+      for c in 0..<3 {
+        p[c * plane + i] = (Float(rgba[i * 4 + c]) / 255 - mean[c]) / std[c]
+      }
+    }
+    let out = try ml.prediction(from: MLDictionaryFeatureProvider(dictionary: ["image": arr]))
+    guard let logits = out.featureValue(for: "mask_logits")?.multiArrayValue else {
+      throw Failure("精修｜模型沒有輸出")
+    }
+    var m = [Float](repeating: 0, count: plane)
+    let st = logits.strides.map { $0.intValue }
+    let rowStride = st.count >= 4 ? st[2] : s
+    let colStride = st.count >= 4 ? st[3] : 1
+    if logits.dataType == .float32 {
+      let lp = logits.dataPointer.bindMemory(to: Float.self, capacity: logits.count)
+      for y in 0..<s {
+        for x in 0..<s { m[y * s + x] = 1 / (1 + exp(-lp[y * rowStride + x * colStride])) }
+      }
+    } else {
+      for y in 0..<s {
+        for x in 0..<s {
+          let v = logits[[0, 0, NSNumber(value: y), NSNumber(value: x)]].floatValue
+          m[y * s + x] = 1 / (1 + exp(-v))
+        }
+      }
+    }
+    let scaled = MCCutoutRefine.upscaleBilinear(m, s, s, w, h)
+    cacheLock.lock()
+    if cacheImage === cg { cacheMatte = scaled }
+    cacheLock.unlock()
+    return scaled
+  }
+
+  /// 編譯好的 BiRefNet（第一次把 .mlpackage 編成 .mlmodelc 存在旁邊，之後直接載）
+  @available(iOS 17.0, *)
+  static func birefnetModel(path: String) throws -> MLModel {
+    if let m = birefnet, birefnetPath == path { return m }
+    let pkg = URL(fileURLWithPath: path)
+    let compiled = pkg.deletingLastPathComponent().appendingPathComponent("BiRefNet.mlmodelc")
+    let fm = FileManager.default
+    if !fm.fileExists(atPath: compiled.path) {
+      let tmp = try MLModel.compileModel(at: pkg)
+      try? fm.removeItem(at: compiled)
+      try fm.moveItem(at: tmp, to: compiled)
+    }
+    let cfg = MLModelConfiguration()
+    cfg.computeUnits = .all
+    let m = try MLModel(contentsOf: compiled, configuration: cfg)
+    birefnet = m
+    birefnetPath = path
+    return m
+  }
+
+  /// 位元組遮罩縮放（雙線性）
+  static func resizeBytes(_ src: [UInt8], _ sw: Int, _ sh: Int, _ dw: Int, _ dh: Int) -> [UInt8] {
+    if sw == dw && sh == dh { return src }
+    let f = MCCutoutRefine.upscaleBilinear(src.map { Float($0) / 255 }, sw, sh, dw, dh)
+    return f.map { UInt8(max(0, min(255, Int($0 * 255 + 0.5)))) }
   }
 
   static func makePool(_ w: Int, _ h: Int) -> CVPixelBufferPool? {
@@ -16246,6 +16433,75 @@ enum MCCutoutRefine {
         out[s] = pp[i] * (1 - k) + q * k
       }
     }
+  }
+
+  /// 兩張遮罩「是人／主體」（≥0.5）的 IoU；兩張都沒有回 0（同 Android CutoutMatting.iou）
+  static func iou(_ a: [Float], _ b: [Float]) -> Double {
+    var inter = 0
+    var union = 0
+    for i in 0..<min(a.count, b.count) {
+      let pa = a[i] >= 0.5
+      let pb = b[i] >= 0.5
+      if pa && pb { inter += 1 }
+      if pa || pb { union += 1 }
+    }
+    return union == 0 ? 0 : Double(inter) / Double(union)
+  }
+
+  /// 粗遮罩＋matte（同 Android CutoutMatting.fuse）：粗遮罩是主體的區域往內縮
+  /// [core] 像素＝核心一定是 1，往外擴 [reach] 像素以外一定是 0，中間照 matte
+  static func fuse(_ coarse: [Float], _ matte: [Float], _ w: Int, _ h: Int, core: Int, reach: Int)
+    -> [Float]
+  {
+    let inside = coarse.map { $0 >= 0.5 }
+    let dIn = chamfer(inside, w, h)
+    let dOut = chamfer(inside.map { !$0 }, w, h)
+    let coreD = core * 3
+    let reachD = reach * 3
+    var out = [Float](repeating: 0, count: w * h)
+    for i in 0..<(w * h) {
+      if inside[i] {
+        out[i] = dIn[i] > coreD ? 1 : matte[i]
+      } else if dOut[i] <= reachD {
+        out[i] = matte[i]
+      }
+    }
+    return out
+  }
+
+  /// chamfer 3-4 距離轉換：[on] 的每一點到最近一個「不是 on」的點的距離（×3）
+  static func chamfer(_ on: [Bool], _ w: Int, _ h: Int) -> [Int] {
+    let inf = Int.max / 4
+    var d = on.map { $0 ? inf : 0 }
+    for y in 0..<h {
+      for x in 0..<w {
+        let i = y * w + x
+        if d[i] == 0 { continue }
+        var v = d[i]
+        if x > 0 { v = min(v, d[i - 1] + 3) }
+        if y > 0 {
+          v = min(v, d[i - w] + 3)
+          if x > 0 { v = min(v, d[i - w - 1] + 4) }
+          if x < w - 1 { v = min(v, d[i - w + 1] + 4) }
+        }
+        d[i] = v
+      }
+    }
+    for y in stride(from: h - 1, through: 0, by: -1) {
+      for x in stride(from: w - 1, through: 0, by: -1) {
+        let i = y * w + x
+        if d[i] == 0 { continue }
+        var v = d[i]
+        if x < w - 1 { v = min(v, d[i + 1] + 3) }
+        if y < h - 1 {
+          v = min(v, d[i + w] + 3)
+          if x < w - 1 { v = min(v, d[i + w + 1] + 4) }
+          if x > 0 { v = min(v, d[i + w - 1] + 4) }
+        }
+        d[i] = v
+      }
+    }
+    return d
   }
 
   /// 一格延遲防閃（位元組遮罩）：前後差 ≤25、中間跟兩邊都差 ≥26 → 前後平均

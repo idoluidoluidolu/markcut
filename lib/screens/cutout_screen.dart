@@ -12,6 +12,7 @@ import '../models/cutout.dart' show kCutoutColors;
 import '../services/cutout_detect.dart';
 import '../services/cutout_photo.dart';
 import '../services/diagnostics.dart';
+import '../services/model_store.dart';
 import '../services/photo_export.dart';
 import '../services/video_picker.dart';
 import '../theme.dart';
@@ -249,9 +250,10 @@ class _CutoutScreenState extends State<CutoutScreen> {
   void _undoOne() {
     if (_undo.isEmpty) return;
     final prev = _undo.removeLast();
-    final idsChanged = !_sameIds(prev.ids, _st.ids);
+    final maskChanged =
+        !_sameIds(prev.ids, _st.ids) || prev.refined != _st.refined;
     setState(() => _st = prev);
-    if (idsChanged) unawaited(_refreshMask());
+    if (maskChanged) unawaited(_refreshMask());
     _scheduleFg();
     if (prev.bg == PhotoCutBg.image && prev.bgPath != _bgImgPath) {
       unawaited(_loadBg(prev.bgPath));
@@ -276,6 +278,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
     int? color,
     String? bgPath,
     double? feather,
+    bool? refined,
   }) => PhotoCutState(
     ids: ids ?? _st.ids,
     strokes: strokes ?? _st.strokes,
@@ -283,7 +286,169 @@ class _CutoutScreenState extends State<CutoutScreen> {
     color: color ?? _st.color,
     bgPath: bgPath ?? _st.bgPath,
     feather: feather ?? _st.feather,
+    refined: refined ?? _st.refined,
   );
+
+  // ===== 精修（BiRefNet，模型用到才下載）=====
+
+  /// 這台用的精修模型：iOS 用 Core ML、Android 用 ONNX
+  ModelPack get _refinePack => defaultTargetPlatform == TargetPlatform.iOS
+      ? kBiRefNetCoreML
+      : kBiRefNetOnnx;
+
+  /// 下載好的精修模型路徑（給原生端）；沒下載回 null
+  String? _refineModel;
+  bool _refining = false;
+
+  Future<String?> _refineModelPath() async =>
+      _refineModel ??= await ModelStore.instance.readyPath(_refinePack);
+
+  /// 精修開關：開＝模型看整張照片、跟選的主體融合（髮絲、毛邊）；再按一次關掉
+  Future<void> _refine() async {
+    if (_refining) return;
+    final cut = _cut;
+    if (cut == null || _st.ids.isEmpty) {
+      showHint(context, '先選要留下的主體');
+      return;
+    }
+    if (_st.refined) {
+      _push();
+      setState(() => _st = _with(refined: false));
+      unawaited(_refreshMask());
+      return;
+    }
+    setState(() => _refining = true);
+    try {
+      var model = await _refineModelPath();
+      if (model == null) {
+        if (!mounted) return;
+        final mb = (_refinePack.totalBytes / (1 << 20)).round();
+        final go = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            content: Text('精修要先下載模型（約 $mb MB）'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('下載'),
+              ),
+            ],
+          ),
+        );
+        if (go != true || !mounted) return;
+        model = await _downloadRefineModel();
+        if (model == null || !mounted) return;
+        _refineModel = model;
+      }
+      if (!mounted) return;
+      var dialogOpen = true;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const PopScope(
+          canPop: false,
+          child: AlertDialog(
+            title: Text('精修中…'),
+            content: SizedBox(
+              height: 48,
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          ),
+        ),
+      ).then((_) => dialogOpen = false);
+      final r = await CutoutDetect.refinePhoto(
+        widget.photo.path,
+        _st.ids.toList()..sort(),
+        model: model,
+        previewSide: math.max(cut.w, cut.h),
+        analyzeSide: _analyzeSide,
+      );
+      if (mounted && dialogOpen) Navigator.of(context).pop();
+      if (!mounted) return;
+      if (r == null) {
+        final why = CutoutDetect.lastErrorBrief;
+        showHint(context, why == null ? '精修失敗' : '精修失敗\n$why', error: true);
+        return;
+      }
+      if (r.mismatch) {
+        showHint(context, '這張照片精修幫不上忙');
+        return;
+      }
+      final img = await maskToImage(r.mask!, r.w, r.h);
+      if (!mounted) {
+        img.dispose();
+        return;
+      }
+      _push();
+      final old = _mask;
+      setState(() {
+        _mask = img;
+        _st = _with(refined: true);
+      });
+      old?.dispose();
+      _scheduleFg();
+    } finally {
+      if (mounted) setState(() => _refining = false);
+    }
+  }
+
+  /// 下載精修模型（有進度、能取消）；成功回路徑
+  Future<String?> _downloadRefineModel() async {
+    final progress = ValueNotifier<double>(0);
+    var dialogOpen = true;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Text('下載精修模型'),
+          content: ValueListenableBuilder<double>(
+            valueListenable: progress,
+            builder: (context, p, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LinearProgressIndicator(value: p),
+                const SizedBox(height: 8),
+                Text('${(p * 100).floor()}%'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: ModelStore.instance.cancel,
+              child: const Text('取消'),
+            ),
+          ],
+        ),
+      ),
+    ).then((_) {
+      dialogOpen = false;
+      // 視窗關掉的動畫跑完才收（關的時候還在畫進度條）
+      progress.dispose();
+    });
+    var closed = false;
+    try {
+      return await ModelStore.instance.ensure(
+        _refinePack,
+        onProgress: (p) {
+          if (!closed) progress.value = p;
+        },
+      );
+    } on ModelCancelled {
+      return null;
+    } catch (e) {
+      if (mounted) showHint(context, '模型下載失敗：$e', error: true);
+      return null;
+    } finally {
+      closed = true;
+      if (mounted && dialogOpen) Navigator.of(context).pop();
+    }
+  }
 
   /// 選的主體變了：跟原生要這幾個的遮罩（最後一次勝出）
   Future<void> _refreshMask() async {
@@ -294,9 +459,11 @@ class _CutoutScreenState extends State<CutoutScreen> {
     setState(() => _maskBusy = true);
     Uint8List? m;
     var w = cut.w, h = cut.h;
+    final refined = _st.refined;
     if (ids.isEmpty) {
       m = Uint8List(w * h);
-    } else if (_sameIds(_st.ids, {for (final s in cut.subjects) s.id})) {
+    } else if (!refined &&
+        _sameIds(_st.ids, {for (final s in cut.subjects) s.id})) {
       m = cut.mask;
     } else {
       final r = await CutoutDetect.photoMask(
@@ -304,6 +471,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
         ids,
         maxSide: math.max(cut.w, cut.h),
         analyzeSide: _analyzeSide,
+        refineModel: refined ? await _refineModelPath() : null,
       );
       if (r != null) (m, w, h) = r;
     }
@@ -455,6 +623,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
           st.ids.toList()..sort(),
           maxSide: long,
           analyzeSide: _analyzeSide,
+          refineModel: st.refined ? await _refineModelPath() : null,
         );
         if (r == null) throw StateError('原尺寸遮罩做不出來');
         mask = await maskToImage(r.$1, r.$2, r.$3);
@@ -740,6 +909,14 @@ class _CutoutScreenState extends State<CutoutScreen> {
       on: false,
       onTap: _analyzing ? null : _analyze,
     );
+    final refine = _tile(
+      icon: Icons.face_retouching_natural_outlined,
+      label: '精修',
+      on: _st.refined,
+      onTap: _analyzing || _refining || cut == null || cut.subjects.isEmpty
+          ? null
+          : _refine,
+    );
     if (cut == null || photo == null || cut.subjects.isEmpty) {
       return Row(
         children: [
@@ -772,6 +949,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
               ),
             ),
           ),
+        SizedBox(width: 84, child: Center(child: refine)),
         SizedBox(width: 84, child: Center(child: retry)),
       ],
     );
