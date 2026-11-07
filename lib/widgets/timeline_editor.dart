@@ -165,6 +165,11 @@ class TimelineEditor extends StatefulWidget {
   /// 在預設那條常駐空軌之外再多畫幾條）
   final int extraTracks;
 
+  /// 片段右下角的秒數標（例「2.0s」）用什麼顏色；回 null＝這段不標。
+  /// 整個沒給＝都不標。快速 Vlog 的專案才給：跟著「每段」走的白字、
+  /// 個別改過長度的琥珀字，一眼看出哪幾段不會跟著每段變
+  final Color? Function(TimelineClip clip)? lengthTagColor;
+
   const TimelineEditor({
     super.key,
     required this.timeline,
@@ -218,6 +223,7 @@ class TimelineEditor extends StatefulWidget {
     this.snapEnabled = true,
     this.extraTracks = 0,
     this.trackScale = 1.0,
+    this.lengthTagColor,
   });
 
   static const double rulerH = 22;
@@ -1227,6 +1233,7 @@ class _TimelineEditorState extends State<TimelineEditor> {
             scrollController: widget.scrollController,
             leadPad: _leadPad,
             viewWidth: _viewWidth,
+            lengthTag: widget.lengthTagColor?.call(c),
           ),
         // 錄音中：從起錄點往右長的紅色即時波形，長度跟著播放頭
         if (widget.voiceRecording && widget.voiceTrack == track)
@@ -1960,6 +1967,9 @@ class _ClipBlock extends StatelessWidget {
   final double leadPad;
   final double viewWidth;
 
+  /// 右下角秒數標的顏色；null＝不標（見 TimelineEditor.lengthTagColor）
+  final Color? lengthTag;
+
   const _ClipBlock({
     super.key,
     required this.clip,
@@ -1982,6 +1992,7 @@ class _ClipBlock extends StatelessWidget {
     required this.scrollController,
     required this.leadPad,
     required this.viewWidth,
+    this.lengthTag,
   });
 
   @override
@@ -2128,6 +2139,30 @@ class _ClipBlock extends StatelessWidget {
                                 fontSize: 8.5,
                                 color: Colors.white,
                                 fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      // 秒數標（快速 Vlog）：右下角；選取時讓開右把手的
+                      // 琥珀條（13px）。太窄的片段擺不下就不標
+                      if (lengthTag != null && w >= 34)
+                        Positioned(
+                          right: isSelected ? 17 : 5,
+                          bottom: 3,
+                          child: IgnorePointer(
+                            child: Text(
+                              '${clip.length.toStringAsFixed(1)}s',
+                              style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w700,
+                                color: lengthTag,
+                                height: 1,
+                                fontFeatures: const [
+                                  FontFeature.tabularFigures(),
+                                ],
+                                shadows: const [
+                                  Shadow(color: Colors.black87, blurRadius: 3),
+                                ],
                               ),
                             ),
                           ),

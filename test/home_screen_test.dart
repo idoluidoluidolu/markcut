@@ -5,8 +5,8 @@
 //   1. 首頁本體只有 logo、右上角個人中心、底部那顆「＋ 開始」——沒有
 //      任何入口文字（舊的四個方塊、更舊的「加入浮水印」「製作浮水印」
 //      都不在）
-//   2. ＋叫出來的第一層：六列 浮水印／照片拼圖／GIF／馬賽克／去背／剪輯，順序、
-//      文案、一行說明、圖示；右邊不畫箭頭（使用者指定）
+//   2. ＋叫出來的第一層：七列 浮水印／照片拼圖／GIF／馬賽克／去背／快速 Vlog／
+//      剪輯，順序、文案、一行說明、圖示；右邊不畫箭頭（使用者指定）
 //   3. 每一列走的路：
 //        浮水印   → 第二層「照片／影片」→ 對應的選取器 →
 //                   一個進單檔編輯器、多個直接進批次頁（中間不再問
@@ -20,6 +20,8 @@
 //                   選單）
 //        去背     → 第二層「照片／影片」：照片挑一張進去背頁；影片挑一支
 //                   進剪輯（cutoutEntry，接好就開去背、開始算遮罩）
+//        快速 Vlog → 不進第二層，直接開影片選取器（多選），整批照點選順序
+//                   進剪輯（vlogEntry，每支取中間 2 秒接成一支）
 //        剪輯     → 不開選取器、不進第二層，直接開一條空的時間軸
 //   4. 第二層左上角的返回：回到第一層（不是關掉整個選單），整條列
 //      都按得到
@@ -58,13 +60,14 @@ const _pngB64 =
     'LQkAXrdVAdmuFfUAAAAASUVORK5CYII=';
 
 /// ＋選單第一層，由上而下
-const _labels = ['浮水印', '照片拼圖', 'GIF', '馬賽克', '去背', '剪輯'];
+const _labels = ['浮水印', '照片拼圖', 'GIF', '馬賽克', '去背', '快速 Vlog', '剪輯'];
 const _subs = [
   '照片、影片，單支或整批快速加入浮水印',
   '多張照片拼成一張',
   '影片轉成 GIF',
   '照片、影片自動找出人臉打碼',
   '照片、影片自動去掉背景',
+  '多支影片各取幾秒，串成一支',
   '開啟一個空專案自由編輯',
 ];
 const _icons = [
@@ -73,6 +76,7 @@ const _icons = [
   Icons.gif_box_outlined,
   Icons.blur_on,
   Icons.auto_fix_high_outlined,
+  Icons.video_library_outlined,
   Icons.smart_display_outlined,
 ];
 
@@ -705,6 +709,31 @@ void main() {
         expect(find.text(x), findsOneWidget, reason: '沒回到第一層（少了「$x」）');
       }
       expect(spy.edits, isEmpty, reason: '返回不該推頁');
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('快速 Vlog：不進第二層，直接開影片選取器，整批照順序進剪輯', (t) async {
+      // 選取器照理只列影片，但 web／舊安卓那條路可能混進照片，首頁要自己濾
+      _files.next = [_p('b.mp4'), _p('c.png'), _p('a.mp4')];
+      final spy = _RouteSpy();
+      await _pump(t, spy: spy);
+      await _tapFab(t);
+      await t.tap(find.text('快速 Vlog'));
+      await _settle(t, 20);
+
+      expect(_files.calls, 1, reason: '沒有開影片選取器');
+      expect(_files.lastType, FileType.video, reason: '相簿只能列影片');
+      expect(_files.lastMultiple, isTrue, reason: '要能一次挑一堆');
+      expect(_images.calls, 0, reason: '開錯了（照片那個選取器）');
+      final page = spy.lastEdit(t);
+      expect(page, isA<VideoEditorScreen>());
+      expect((page as VideoEditorScreen).videoPaths, [
+        _p('b.mp4'),
+        _p('a.mp4'),
+      ], reason: '照片要被濾掉、影片照點選順序');
+      expect(page.vlogEntry, isTrue, reason: '每支取中間 2 秒接成一支');
+      expect(page.mosaicEntry || page.cutoutEntry || page.blank, isFalse);
+      await _drain(t);
       expect(t.takeException(), isNull);
     });
 

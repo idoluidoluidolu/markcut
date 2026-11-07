@@ -337,6 +337,26 @@ class _HomeScreenState extends State<HomeScreen> {
     return false;
   }
 
+  /// 快速 Vlog：直接開相簿多選影片（不再多問一層），照點選順序進剪輯，
+  /// 每支取中間 2 秒頭尾接好；左上那顆「每段 N 秒」可以改全部，選著某
+  /// 一段時改那一段（使用者在畫布選的甲案）。
+  ///
+  /// 不自己上重入鎖，理由同 [_makeGif]
+  Future<void> _makeVlog() async {
+    final list = await pickVideoFiles();
+    final v = list.where(_isVideoFile).toList();
+    if (v.isEmpty || !mounted) return;
+    await Navigator.push(
+      context,
+      editRoute(
+        builder: (_) => VideoEditorScreen(
+          videoPaths: [for (final f in v) f.path],
+          vlogEntry: true,
+        ),
+      ),
+    );
+  }
+
   /// 選完才講的提醒（略過的檔案、數量偏多）。
   /// 數量上限以前寫在選單上，但使用者還沒開始挑就先看到限制沒什麼用，
   /// 挑完才講才是他真的需要知道的時候
@@ -538,6 +558,8 @@ class _HomeScreenState extends State<HomeScreen> {
           again = await _makeMosaic();
         case _HomeAction.cutout:
           again = await _makeCutout();
+        case _HomeAction.vlog:
+          await _makeVlog();
         case _HomeAction.cut:
           // 不挑素材，直接開一條空的時間軸，照片、影片進去再加
           await Navigator.push(
@@ -548,7 +570,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   });
 
-  /// 第一層：五個去處
+  /// 第一層：各個去處
   Future<_HomeAction?> _askAction() => _showSheet<_HomeAction>(
     rows: const [
       _SheetRow(
@@ -580,6 +602,14 @@ class _HomeScreenState extends State<HomeScreen> {
         label: '去背',
         sub: '照片、影片自動去掉背景',
         value: _HomeAction.cutout,
+      ),
+      // 排在剪輯上面：一樣是把影片接成一支，這列是現成的做法、剪輯是
+      // 從空白開始自由做（使用者在畫布上看過的位置）
+      _SheetRow(
+        icon: Icons.video_library_outlined,
+        label: '快速 Vlog',
+        sub: '多支影片各取幾秒，串成一支',
+        value: _HomeAction.vlog,
       ),
       _SheetRow(
         icon: Icons.smart_display_outlined,
@@ -720,8 +750,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// ＋選單第一層的五個去處
-enum _HomeAction { watermark, collage, gif, mosaic, cutout, cut }
+/// ＋選單第一層的去處
+enum _HomeAction { watermark, collage, gif, mosaic, cutout, vlog, cut }
 
 /// 浮水印第二層的結果：兩種素材，加上「回上一層」
 enum _Media { photo, video, back }
