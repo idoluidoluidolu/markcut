@@ -15712,17 +15712,44 @@ enum MCCutout {
     return pool
   }
 
+  /// 導引圖（修邊用的原畫面）長邊、存檔的遮罩長邊（同 Android CutoutChannel.kt）
+  static let guideLong = 720
+  static let storeLong = 640
+
+  /// accurate 太慢時中途改用 balanced（丟出這個，外面接住重來）
+  struct TooSlow: Error {}
+
   /// 整支影片每一格的人像遮罩 → .mcmk。
   ///
-  /// AVAssetReader 順著硬體解碼（不 seek）；每一格先轉正、縮到長邊 960
-  /// 再交給 Vision（遮罩就是轉正後的方向，跟播放器、相簿看到的一樣）。
-  /// 人像分割是「有狀態」的請求：整支用同一個請求物件，前後格會互相
-  /// 參照、邊緣比較不會閃（WWDC21 10040）；等級用 Apple 建議給影片逐格的
-  /// balanced。30fps 以上的片子隔格算（遮罩查表取「不晚於這一刻的最後
-  /// 一格」，60fps 拿隔壁格的遮罩看不出差別）
+  /// AVAssetReader 順著硬體解碼（不 seek）。每一格：
+  /// 1. 轉正、縮成長邊 [guideLong] 的導引圖，只畫裁切框那一塊（[MCCropTracker]：
+  ///    人小就只裁人那一塊給 Vision）
+  /// 2. Vision 人像分割（有狀態的請求：整支同一個請求物件，前後格互相參照、
+  ///    邊緣比較不閃，WWDC21 10040）。等級先用 accurate（Apple：balanced 再加
+  ///    matting 細修）；前十幾格量出來整支會超過預算就改 balanced 從頭重來
+  /// 3. 粗遮罩放大回裁切框，[MCCutoutRefine.bandRefine] 拿原畫面修邊
+  /// 4. 貼回整張、縮到長邊 [storeLong] 存檔；寫檔晚一格（[MCCutoutRefine.ofd] 防閃）
+  /// 遮罩是轉正後的方向（跟播放器、相簿看到的一樣）。30fps 以上的片子隔格算
+  /// （遮罩查表取「不晚於這一刻的最後一格」）
   static func videoMask(
     path: String, out: String, cancelled: AtomicFlag, gate: MCInteractivePrepGate,
     progress: (Double) -> Void
+  ) throws -> [String: Any] {
+    do {
+      return try videoMask(
+        path: path, out: out, level: .accurate, cancelled: cancelled, gate: gate,
+        progress: progress)
+    } catch is TooSlow {
+      NSLog("[Cutout] accurate 太慢，改 balanced 重算")
+      return try videoMask(
+        path: path, out: out, level: .balanced, cancelled: cancelled, gate: gate,
+        progress: progress)
+    }
+  }
+
+  static func videoMask(
+    path: String, out: String, level: VNGeneratePersonSegmentationRequest.QualityLevel,
+    cancelled: AtomicFlag, gate: MCInteractivePrepGate, progress: (Double) -> Void
   ) throws -> [String: Any] {
     let asset = AVURLAsset(url: URL(fileURLWithPath: path))
     guard let track = asset.tracks(withMediaType: .video).first else {
@@ -15743,9 +15770,12 @@ enum MCCutout {
     }
     let orientation = MCFaceDetect.videoOrientation(track.preferredTransform)
     let duration = max(0.001, asset.duration.seconds)
+    let fps = min(30, Double(max(1, track.nominalFrameRate)))
+    // 預算：整支算完不要超過片長的 2.5 倍（至少一分鐘）
+    let budget = max(60, duration * 2.5)
     let request = VNGeneratePersonSegmentationRequest()
-    request.qualityLevel = .balanced
-    request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+    request.qualityLevel = level
+    request.outputPixelFormat = kCVPixelFormatType_OneComponent32Float
     let sequence = VNSequenceRequestHandler()
     var writer: MCCutoutMaskWriter?
     var pool: CVPixelBufferPool?
@@ -15755,6 +15785,29 @@ enum MCCutout {
     var failed = 0
     var firstError: String?
     var next = -Double.infinity
+    var gw = 0
+    var gh = 0
+    var tracker: MCCropTracker?
+    var guideFull = [Float]()
+    let ws = MCCutoutRefine.Workspace()
+    // 防閃要看下一格：這一格先留著，下一格算出來才寫
+    var prevRaw: [UInt8]?
+    var pendRaw: [UInt8]?
+    var pendT = 0.0
+    var timed = 0
+    var timeSum = 0.0
+    func emit(_ t: Double, _ raw: [UInt8]) throws {
+      guard let w = writer else { return }
+      if let cur = pendRaw {
+        try w.add(
+          pts: pendT,
+          mask: Data(prevRaw.map { MCCutoutRefine.ofd($0, cur, raw) } ?? cur))
+        frames += 1
+        prevRaw = cur
+      }
+      pendRaw = raw
+      pendT = t
+    }
     do {
       while true {
         if cancelled.isSet { throw Failure("已取消") }
@@ -15767,47 +15820,80 @@ enum MCCutout {
             return true
           }
           next = t + 1.0 / 30 - 0.5 / 60
+          let t0 = CACurrentMediaTime()
           let src = CIImage(cvPixelBuffer: pb).oriented(orientation)
           let e = src.extent
-          let k = min(1, 960 / max(e.width, e.height))
-          let uw = max(2, Int((e.width * k).rounded()) & ~1)
-          let uh = max(2, Int((e.height * k).rounded()) & ~1)
-          if pool == nil || poolW != uw || poolH != uh {
-            pool = makePool(uw, uh)
-            poolW = uw
-            poolH = uh
+          let uw = Int(e.width.rounded())
+          let uh = Int(e.height.rounded())
+          let (nw, nh) = fit(e.size, guideLong)
+          if nw != gw || nh != gh || tracker == nil {
+            gw = nw
+            gh = nh
+            tracker = MCCropTracker(gw: gw, gh: gh)
+            guideFull = [Float](repeating: 0, count: gw * gh)
           }
-          var upright: CVPixelBuffer?
-          if let p = pool { CVPixelBufferPoolCreatePixelBuffer(nil, p, &upright) }
-          guard let up = upright else { throw Failure("轉正｜配不出畫面暫存") }
+          guard let tr = tracker else { return true }
+          let box = tr.next()
+          let (bx, by, bw, bh) = (box[0], box[1], box[2], box[3])
+          if pool == nil || poolW != bw || poolH != bh {
+            pool = makePool(bw, bh)
+            poolW = bw
+            poolH = bh
+          }
+          var cropBuf: CVPixelBuffer?
+          if let p = pool { CVPixelBufferPoolCreatePixelBuffer(nil, p, &cropBuf) }
+          guard let cb = cropBuf else { throw Failure("轉正｜配不出畫面暫存") }
+          // 整張轉正縮到導引圖大小，再移到裁切框（CI 座標 y 往上：框的上緣
+          // 在 gh-(by+bh)）
           let img = src
             .transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY))
             .transformed(
               by: CGAffineTransform(
-                scaleX: CGFloat(uw) / e.width, y: CGFloat(uh) / e.height))
-          frameContext.render(img, to: up)
+                scaleX: CGFloat(gw) / e.width, y: CGFloat(gh) / e.height))
+            .transformed(
+              by: CGAffineTransform(
+                translationX: -CGFloat(bx), y: -CGFloat(gh - by - bh)))
+          frameContext.render(img, to: cb)
           do {
-            try sequence.perform([request], on: up, orientation: .up)
+            try sequence.perform([request], on: cb, orientation: .up)
           } catch {
             failed += 1
             if firstError == nil { firstError = "\(error)" }
             return true
           }
-          guard let mpb = request.results?.first?.pixelBuffer else {
+          guard let mpb = request.results?.first?.pixelBuffer, let plane = floatPlane(mpb)
+          else {
             failed += 1
             return true
           }
+          let (mask, mw, mh) = plane
+          let coarse = MCCutoutRefine.upscaleBilinear(mask, mw, mh, bw, bh)
+          let guide = rgbBytes(cb)
+          let refined = MCCutoutRefine.bandRefine(
+            guide: guide, coarse: coarse, w: bw, h: bh, ws: ws)
+          tr.update(refined, box)
+          for i in 0..<guideFull.count { guideFull[i] = 0 }
+          for y in 0..<bh {
+            let d = (y + by) * gw + bx
+            for x in 0..<bw { guideFull[d + x] = refined[y * bw + x] }
+          }
           if writer == nil {
-            let (mw, mh) = fit(
-              CGSize(
-                width: CVPixelBufferGetWidth(mpb), height: CVPixelBufferGetHeight(mpb)),
-              640)
-            writer = try MCCutoutMaskWriter(path: out, width: mw, height: mh)
+            let (sw, sh) = fit(CGSize(width: uw, height: uh), storeLong)
+            writer = try MCCutoutMaskWriter(path: out, width: sw, height: sh)
           }
           guard let w = writer else { return true }
-          try w.add(pts: t, mask: gray(CIImage(cvPixelBuffer: mpb), w: w.width, h: w.height))
-          frames += 1
+          try emit(
+            t, MCCutoutRefine.downsampleArea(guideFull, gw, gh, w.width, w.height))
           progress(min(1, max(0, t / duration)))
+          // accurate 量前 12 格（第一格含模型載入不算），整支會超過預算就改 balanced
+          if level == .accurate {
+            timed += 1
+            if timed > 1 { timeSum += CACurrentMediaTime() - t0 }
+            if timed == 13 {
+              let per = timeSum / 12
+              if per * duration * fps > budget { throw TooSlow() }
+            }
+          }
           return true
         }
         if !more { break }
@@ -15815,17 +15901,584 @@ enum MCCutout {
       if reader.status == .failed {
         throw Failure("解碼｜\(reader.error?.localizedDescription ?? "?")")
       }
+      // 最後一格沒有下一格可以比，原樣寫
+      if let w = writer, let last = pendRaw {
+        try w.add(pts: pendT, mask: Data(last))
+        frames += 1
+        pendRaw = nil
+      }
       guard let w = writer, frames > 0 else {
         throw Failure("算遮罩｜一格都沒算出來（失敗 \(failed) 格：\(firstError ?? "?")）")
       }
       try w.finish()
       progress(1)
-      return ["frames": frames, "w": w.width, "h": w.height]
+      return ["frames": frames, "w": w.width, "h": w.height, "level": level.rawValue]
     } catch {
       reader.cancelReading()
       writer?.abort()
       throw error
     }
+  }
+
+  /// Vision 的單通道浮點遮罩 → [Float]、寬、高
+  static func floatPlane(_ pb: CVPixelBuffer) -> ([Float], Int, Int)? {
+    let fmt = CVPixelBufferGetPixelFormatType(pb)
+    CVPixelBufferLockBaseAddress(pb, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+    guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
+    let w = CVPixelBufferGetWidth(pb)
+    let h = CVPixelBufferGetHeight(pb)
+    let row = CVPixelBufferGetBytesPerRow(pb)
+    var out = [Float](repeating: 0, count: w * h)
+    if fmt == kCVPixelFormatType_OneComponent32Float {
+      for y in 0..<h {
+        let r = (base + y * row).assumingMemoryBound(to: Float.self)
+        for x in 0..<w { out[y * w + x] = min(1, max(0, r[x])) }
+      }
+    } else if fmt == kCVPixelFormatType_OneComponent8 {
+      for y in 0..<h {
+        let r = (base + y * row).assumingMemoryBound(to: UInt8.self)
+        for x in 0..<w { out[y * w + x] = Float(r[x]) / 255 }
+      }
+    } else {
+      return nil
+    }
+    return (out, w, h)
+  }
+
+  /// BGRA 的 CVPixelBuffer → RGB 交錯位元組（修邊的導引圖）
+  static func rgbBytes(_ pb: CVPixelBuffer) -> [UInt8] {
+    CVPixelBufferLockBaseAddress(pb, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+    let w = CVPixelBufferGetWidth(pb)
+    let h = CVPixelBufferGetHeight(pb)
+    var out = [UInt8](repeating: 0, count: w * h * 3)
+    guard let base = CVPixelBufferGetBaseAddress(pb) else { return out }
+    let row = CVPixelBufferGetBytesPerRow(pb)
+    let src = base.assumingMemoryBound(to: UInt8.self)
+    for y in 0..<h {
+      let r = y * row
+      for x in 0..<w {
+        let o = (y * w + x) * 3
+        out[o] = src[r + x * 4 + 2]
+        out[o + 1] = src[r + x * 4 + 1]
+        out[o + 2] = src[r + x * 4]
+      }
+    }
+    return out
+  }
+}
+
+/// 去背遮罩的後製（同 Android 的 CutoutRefine.kt：兩邊照同一份參考實作寫、
+/// 同一組測試向量驗）：
+/// - [bandRefine]：粗遮罩只在「模糊的那一圈」（0.05~0.95）裡，拿原畫面當導引
+///   做彩色導引濾波（He et al.），邊緣貼齊真正的輪廓；確定是人／背景的地方不動
+/// - [ofd]：一格延遲防閃；[downsampleArea]：導引解析度 → 存檔解析度
+enum MCCutoutRefine {
+  static let lo: Float = 0.05
+
+  /// 暫存（一支影片逐格重複用）：21 張 n 大小的浮點平面接成一塊
+  final class Workspace {
+    private(set) var cap = 0
+    private(set) var base: UnsafeMutablePointer<Float>?
+    private(set) var col: UnsafeMutablePointer<Double>?
+    private var colCap = 0
+
+    func ensure(_ n: Int, _ w: Int) {
+      if n > cap {
+        base?.deallocate()
+        base = UnsafeMutablePointer<Float>.allocate(capacity: n * 21)
+        cap = n
+      }
+      if w > colCap {
+        col?.deallocate()
+        col = UnsafeMutablePointer<Double>.allocate(capacity: w)
+        colCap = w
+      }
+    }
+
+    func buf(_ i: Int) -> UnsafeMutablePointer<Float> { base! + i * cap }
+
+    deinit {
+      base?.deallocate()
+      col?.deallocate()
+    }
+  }
+
+  /// box 平均：視窗 (2r+1)²，邊界只平均實際存在的像素（不補值）。先橫再直
+  static func boxMean(
+    _ src: UnsafePointer<Float>, _ w: Int, _ h: Int, _ r: Int,
+    _ tmp: UnsafeMutablePointer<Float>, _ dst: UnsafeMutablePointer<Float>,
+    _ col: UnsafeMutablePointer<Double>, _ invCx: [Float]
+  ) {
+    for y in 0..<h {
+      let row = y * w
+      var s = 0.0
+      for x in 0...min(r, w - 1) { s += Double(src[row + x]) }
+      for x in 0..<w {
+        tmp[row + x] = Float(s)
+        let add = x + r + 1
+        if add < w { s += Double(src[row + add]) }
+        let sub = x - r
+        if sub >= 0 { s -= Double(src[row + sub]) }
+      }
+    }
+    for x in 0..<w { col[x] = 0 }
+    for y in 0...min(r, h - 1) {
+      let row = y * w
+      for x in 0..<w { col[x] += Double(tmp[row + x]) }
+    }
+    for y in 0..<h {
+      let cy = Float(min(h - 1, y + r) - max(0, y - r) + 1)
+      let inv = 1 / cy
+      let row = y * w
+      for x in 0..<w { dst[row + x] = Float(col[x]) * invCx[x] * inv }
+      let add = y + r + 1
+      if add < h {
+        let ar = add * w
+        for x in 0..<w { col[x] += Double(tmp[ar + x]) }
+      }
+      let sub = y - r
+      if sub >= 0 {
+        let sr = sub * w
+        for x in 0..<w { col[x] -= Double(tmp[sr + x]) }
+      }
+    }
+  }
+
+  static func invCounts(_ w: Int, _ r: Int) -> [Float] {
+    (0..<w).map { x in 1 / Float(min(w - 1, x + r) - max(0, x - r) + 1) }
+  }
+
+  /// 邊帶權重：帶（lo < a < 1-lo）做 [1,2,1]/4 的 3×3 平滑，邊界取最近的像素
+  static func bandWeight(_ p: [Float], _ w: Int, _ h: Int) -> [Float] {
+    var t = [Float](repeating: 0, count: w * h)
+    for i in 0..<(w * h) { t[i] = (p[i] > lo && p[i] < 1 - lo) ? 1 : 0 }
+    var hz = [Float](repeating: 0, count: w * h)
+    for y in 0..<h {
+      let row = y * w
+      for x in 0..<w {
+        hz[row + x] =
+          (t[row + max(0, x - 1)] + 2 * t[row + x] + t[row + min(w - 1, x + 1)]) * 0.25
+      }
+    }
+    var out = [Float](repeating: 0, count: w * h)
+    for y in 0..<h {
+      let up = max(0, y - 1) * w
+      let c = y * w
+      let dn = min(h - 1, y + 1) * w
+      for x in 0..<w { out[c + x] = (hz[up + x] + 2 * hz[c + x] + hz[dn + x]) * 0.25 }
+    }
+    return out
+  }
+
+  /// 邊帶導引濾波。[guide]＝RGB 交錯、[coarse]＝0~1 → 新的遮罩（同大小）
+  static func bandRefine(
+    guide: [UInt8], coarse: [Float], w: Int, h: Int, r: Int = 2, eps: Float = 1e-3,
+    ws: Workspace = Workspace()
+  ) -> [Float] {
+    var out = coarse
+    let wgt = bandWeight(coarse, w, h)
+    var x0 = Int.max
+    var y0 = Int.max
+    var x1 = -1
+    var y1 = -1
+    for y in 0..<h {
+      for x in 0..<w where wgt[y * w + x] > 0 {
+        x0 = min(x0, x)
+        x1 = max(x1, x)
+        y0 = min(y0, y)
+        y1 = max(y1, y)
+      }
+    }
+    if x1 < 0 { return out }
+    let m = 2 * r + 1
+    x0 = max(0, x0 - m)
+    y0 = max(0, y0 - m)
+    x1 = min(w, x1 + 1 + m)
+    y1 = min(h, y1 + 1 + m)
+    // 外框切成一條條橫帶，每條只算有邊帶的那幾段（往外多算 2r，結果跟整塊
+    // 一起算一樣）
+    let strip = 24
+    let pad = 2 * r
+    var ys = y0
+    while ys < y1 {
+      let ye = min(y1, ys + strip)
+      var x = x0
+      while x < x1 {
+        var xs = -1
+        while x < x1 {
+          var any = false
+          for y in ys..<ye where wgt[y * w + x] > 0 {
+            any = true
+            break
+          }
+          if any {
+            xs = x
+            break
+          }
+          x += 1
+        }
+        if xs < 0 { break }
+        var xe = xs + 1
+        var gap = 0
+        x = xs + 1
+        while x < x1 {
+          var any = false
+          for y in ys..<ye where wgt[y * w + x] > 0 {
+            any = true
+            break
+          }
+          if any {
+            xe = x + 1
+            gap = 0
+          } else {
+            gap += 1
+            if gap > 2 * pad + 2 { break }
+          }
+          x += 1
+        }
+        refineRect(
+          guide: guide, coarse: coarse, w: w, wgt: wgt, out: &out, r: r, eps: eps, ws: ws,
+          rx0: max(x0, xs - pad), ry0: max(y0, ys - pad),
+          rx1: min(x1, xe + pad), ry1: min(y1, ye + pad),
+          ix0: xs, iy0: ys, ix1: xe, iy1: ye)
+        x = xe
+      }
+      ys = ye
+    }
+    return out
+  }
+
+  private static func refineRect(
+    guide: [UInt8], coarse: [Float], w: Int, wgt: [Float], out: inout [Float],
+    r: Int, eps: Float, ws: Workspace,
+    rx0: Int, ry0: Int, rx1: Int, ry1: Int, ix0: Int, iy0: Int, ix1: Int, iy1: Int
+  ) {
+    let bw = rx1 - rx0
+    let bh = ry1 - ry0
+    let n = bw * bh
+    ws.ensure(n, bw)
+    let ir = ws.buf(0)
+    let ig = ws.buf(1)
+    let ib = ws.buf(2)
+    let pp = ws.buf(3)
+    let tmp = ws.buf(4)
+    let prod = ws.buf(5)
+    let col = ws.col!
+    let invCx = invCounts(bw, r)
+    for y in 0..<bh {
+      for x in 0..<bw {
+        let s = (y + ry0) * w + (x + rx0)
+        let d = y * bw + x
+        ir[d] = Float(guide[s * 3]) / 255
+        ig[d] = Float(guide[s * 3 + 1]) / 255
+        ib[d] = Float(guide[s * 3 + 2]) / 255
+        pp[d] = coarse[s]
+      }
+    }
+    func mean(_ src: UnsafeMutablePointer<Float>, _ o: Int) -> UnsafeMutablePointer<Float> {
+      let dst = ws.buf(o)
+      boxMean(src, bw, bh, r, tmp, dst, col, invCx)
+      return dst
+    }
+    func meanOf(_ o: Int, _ f: (Int) -> Float) -> UnsafeMutablePointer<Float> {
+      for i in 0..<n { prod[i] = f(i) }
+      return mean(prod, o)
+    }
+    let mr = mean(ir, 6)
+    let mg = mean(ig, 7)
+    let mb = mean(ib, 8)
+    let mp = mean(pp, 9)
+    let mrp = meanOf(10) { ir[$0] * pp[$0] }
+    let mgp = meanOf(11) { ig[$0] * pp[$0] }
+    let mbp = meanOf(12) { ib[$0] * pp[$0] }
+    let vrr = meanOf(13) { ir[$0] * ir[$0] }
+    let vrg = meanOf(14) { ir[$0] * ig[$0] }
+    let vrb = meanOf(15) { ir[$0] * ib[$0] }
+    let vgg = meanOf(16) { ig[$0] * ig[$0] }
+    let vgb = meanOf(17) { ig[$0] * ib[$0] }
+    let vbb = meanOf(18) { ib[$0] * ib[$0] }
+    let ar = ws.buf(19)
+    let ag = ws.buf(20)
+    let ab = mrp
+    let bb = mgp
+    let e = Double(eps)
+    for i in 0..<n {
+      let cr = Double(mrp[i] - mr[i] * mp[i])
+      let cg = Double(mgp[i] - mg[i] * mp[i])
+      let cb = Double(mbp[i] - mb[i] * mp[i])
+      let a11 = Double(vrr[i] - mr[i] * mr[i]) + e
+      let a12 = Double(vrg[i] - mr[i] * mg[i])
+      let a13 = Double(vrb[i] - mr[i] * mb[i])
+      let a22 = Double(vgg[i] - mg[i] * mg[i]) + e
+      let a23 = Double(vgb[i] - mg[i] * mb[i])
+      let a33 = Double(vbb[i] - mb[i] * mb[i]) + e
+      let c11 = a22 * a33 - a23 * a23
+      let c12 = a13 * a23 - a12 * a33
+      let c13 = a12 * a23 - a13 * a22
+      let c22 = a11 * a33 - a13 * a13
+      let c23 = a12 * a13 - a11 * a23
+      let c33 = a11 * a22 - a12 * a12
+      let det = a11 * c11 + a12 * c12 + a13 * c13
+      let inv = abs(det) < 1e-18 ? 0 : 1 / det
+      let xr = (c11 * cr + c12 * cg + c13 * cb) * inv
+      let xg = (c12 * cr + c22 * cg + c23 * cb) * inv
+      let xb = (c13 * cr + c23 * cg + c33 * cb) * inv
+      ar[i] = Float(xr)
+      ag[i] = Float(xg)
+      ab[i] = Float(xb)
+      bb[i] = Float(Double(mp[i]) - xr * Double(mr[i]) - xg * Double(mg[i]) - xb * Double(mb[i]))
+    }
+    let mar = mean(ar, 13)
+    let mag = mean(ag, 14)
+    let mab = mean(ab, 15)
+    let mbb = mean(bb, 16)
+    for yy in iy0..<iy1 {
+      let y = yy - ry0
+      for xx in ix0..<ix1 {
+        let s = yy * w + xx
+        let k = wgt[s]
+        if k <= 0 { continue }
+        let i = y * bw + (xx - rx0)
+        var q = mar[i] * ir[i] + mag[i] * ig[i] + mab[i] * ib[i] + mbb[i]
+        q = min(1, max(0, q))
+        out[s] = pp[i] * (1 - k) + q * k
+      }
+    }
+  }
+
+  /// 一格延遲防閃（位元組遮罩）：前後差 ≤25、中間跟兩邊都差 ≥26 → 前後平均
+  static func ofd(_ prev: [UInt8], _ cur: [UInt8], _ next: [UInt8]) -> [UInt8] {
+    var out = cur
+    for i in 0..<out.count {
+      let p = Int(prev[i])
+      let c = Int(cur[i])
+      let n = Int(next[i])
+      if abs(p - n) <= 25 && abs(c - p) >= 26 && abs(c - n) >= 26 {
+        out[i] = UInt8((p + n + 1) / 2)
+      }
+    }
+    return out
+  }
+
+  /// 0~1 浮點（sw×sh）面積平均縮到 dw×dh 位元組
+  static func downsampleArea(_ src: [Float], _ sw: Int, _ sh: Int, _ dw: Int, _ dh: Int)
+    -> [UInt8]
+  {
+    var out = [UInt8](repeating: 0, count: dw * dh)
+    let kx = Double(sw) / Double(dw)
+    let ky = Double(sh) / Double(dh)
+    for y in 0..<dh {
+      let fy0 = Double(y) * ky
+      let fy1 = Double(y + 1) * ky
+      let iy0 = Int(fy0)
+      let iy1 = min(sh - 1, Int(fy1.rounded(.up)) - 1)
+      for x in 0..<dw {
+        let fx0 = Double(x) * kx
+        let fx1 = Double(x + 1) * kx
+        let ix0 = Int(fx0)
+        let ix1 = min(sw - 1, Int(fx1.rounded(.up)) - 1)
+        var s = 0.0
+        var a = 0.0
+        if iy0 <= iy1 && ix0 <= ix1 {
+          for sy in iy0...iy1 {
+            let wy = min(fy1, Double(sy + 1)) - max(fy0, Double(sy))
+            if wy <= 0 { continue }
+            for sx in ix0...ix1 {
+              let wx = min(fx1, Double(sx + 1)) - max(fx0, Double(sx))
+              if wx <= 0 { continue }
+              s += Double(src[sy * sw + sx]) * wx * wy
+              a += wx * wy
+            }
+          }
+        }
+        let v = a > 0 ? s / a : 0
+        out[y * dw + x] = UInt8(max(0, min(255, Int(v * 255 + 0.5))))
+      }
+    }
+    return out
+  }
+
+  /// 雙線性放大（像素中心對齊），0~1 浮點
+  static func upscaleBilinear(_ src: [Float], _ sw: Int, _ sh: Int, _ dw: Int, _ dh: Int)
+    -> [Float]
+  {
+    var out = [Float](repeating: 0, count: dw * dh)
+    let kx = Double(sw) / Double(dw)
+    let ky = Double(sh) / Double(dh)
+    for y in 0..<dh {
+      let fy = min(Double(sh - 1), max(0, (Double(y) + 0.5) * ky - 0.5))
+      let y0 = Int(fy)
+      let y1 = min(sh - 1, y0 + 1)
+      let wy = Float(fy - Double(y0))
+      for x in 0..<dw {
+        let fx = min(Double(sw - 1), max(0, (Double(x) + 0.5) * kx - 0.5))
+        let x0 = Int(fx)
+        let x1 = min(sw - 1, x0 + 1)
+        let wx = Float(fx - Double(x0))
+        let a = src[y0 * sw + x0] * (1 - wx) + src[y0 * sw + x1] * wx
+        let b = src[y1 * sw + x0] * (1 - wx) + src[y1 * sw + x1] * wx
+        out[y * dw + x] = a * (1 - wy) + b * wy
+      }
+    }
+    return out
+  }
+}
+
+/// 人在哪就裁哪（同 Android 的 CropTracker）：上一格遮罩的外框放大 1.5 倍、
+/// 做成正方形，平滑移動；找不到人、人碰到裁切框的邊就回整張。座標都是導引圖的像素
+final class MCCropTracker {
+  private let gw: Int
+  private let gh: Int
+  private var cx = 0.0
+  private var cy = 0.0
+  private var side = 0.0
+  private var has = false
+
+  init(gw: Int, gh: Int) {
+    self.gw = gw
+    self.gh = gh
+  }
+
+  /// [x, y, w, h]
+  func next() -> [Int] {
+    if !has { return [0, 0, gw, gh] }
+    let s = min(side, Double(max(gw, gh)))
+    let w = max(1, min(gw, Int(min(s, Double(gw)).rounded())))
+    let h = max(1, min(gh, Int(min(s, Double(gh)).rounded())))
+    let x = max(0, min(gw - w, Int((cx - Double(w) / 2).rounded())))
+    let y = max(0, min(gh - h, Int((cy - Double(h) / 2).rounded())))
+    return [x, y, w, h]
+  }
+
+  func update(_ alpha: [Float], _ crop: [Int]) {
+    let (ox, oy, w, h) = (crop[0], crop[1], crop[2], crop[3])
+    var x0 = Int.max
+    var y0 = Int.max
+    var x1 = -1
+    var y1 = -1
+    var count = 0
+    for y in 0..<h {
+      for x in 0..<w where alpha[y * w + x] >= 0.5 {
+        count += 1
+        x0 = min(x0, x)
+        x1 = max(x1, x)
+        y0 = min(y0, y)
+        y1 = max(y1, y)
+      }
+    }
+    if count < max(16, w * h / 2000) {
+      has = false
+      return
+    }
+    let full = w == gw && h == gh
+    if !full && (x0 <= 1 || y0 <= 1 || x1 >= w - 2 || y1 >= h - 2) {
+      has = false
+      return
+    }
+    let bx0 = Double(ox + x0)
+    let by0 = Double(oy + y0)
+    let bx1 = Double(ox + x1)
+    let by1 = Double(oy + y1)
+    let wantSide = max(max(bx1 - bx0, by1 - by0) * 1.5, Double(min(gw, gh)) * 0.35)
+    let wantCx = (bx0 + bx1) / 2
+    let wantCy = (by0 + by1) / 2
+    if !has {
+      cx = wantCx
+      cy = wantCy
+      side = wantSide
+      has = true
+      return
+    }
+    let ncx = cx * 0.6 + wantCx * 0.4
+    let ncy = cy * 0.6 + wantCy * 0.4
+    let nside = side * 0.6 + wantSide * 0.4
+    let half = nside / 2
+    let ok =
+      ncx - half <= bx0 - 2 && ncx + half >= bx1 + 2 && ncy - half <= by0 - 2
+      && ncy + half >= by1 + 2
+    if ok {
+      cx = ncx
+      cy = ncy
+      side = nside
+    } else {
+      cx = wantCx
+      cy = wantCy
+      side = wantSide
+    }
+  }
+}
+
+/// 去色（Forte & Pitié 2021 的 blur-fusion，兩段；同 FFmpeg 的 cutoutDecontFilter、
+/// Dart 的 kCutoutDecontSigma1/2）：邊緣半透明那一圈的顏色混著舊背景，拿附近
+/// 確定是人／背景的顏色解開——F̂＝blur(F·α)/blur(α)、B̂＝blur(B·(1−α))/blur(1−α)、
+/// F＝F̂＋α(I−αF̂−(1−α)B̂)。α=1 的地方 F＝I。核心用 iOS 15 起的
+/// CIKernel.kernels(withMetalString:) 在執行期編譯（不用改 Xcode 設定）
+enum MCCutoutDecont {
+  static let sigma1 = 0.04
+  static let sigma2 = 0.005
+
+  private static let source = """
+    #include <CoreImage/CoreImage.h>
+    using namespace metal;
+    [[stitchable]] float4 mcDecont(coreimage::sample_t i, coreimage::sample_t pf,
+                                   coreimage::sample_t pb, coreimage::sample_t m) {
+      float a = clamp(m.r, 0.0, 1.0);
+      float3 fh = pf.a > 1e-4 ? pf.rgb / pf.a : i.rgb;
+      float3 bh = pb.a > 1e-4 ? pb.rgb / pb.a : i.rgb;
+      float3 f = fh + a * (i.rgb - a * fh - (1.0 - a) * bh);
+      return float4(max(f, float3(0.0)), 1.0);
+    }
+    [[stitchable]] float4 mcUnpremul(coreimage::sample_t p, coreimage::sample_t i) {
+      float3 c = p.a > 1e-4 ? p.rgb / p.a : i.rgb;
+      return float4(max(c, float3(0.0)), 1.0);
+    }
+    """
+
+  static let kernels: (CIColorKernel, CIColorKernel)? = {
+    do {
+      let ks = try CIColorKernel.kernels(withMetalString: source)
+      guard let d = ks.first(where: { $0.name == "mcDecont" }) as? CIColorKernel,
+        let u = ks.first(where: { $0.name == "mcUnpremul" }) as? CIColorKernel
+      else {
+        NSLog("[Cutout] 去色核心編不出來：%@", ks.map { $0.name }.joined(separator: ","))
+        return nil
+      }
+      return (d, u)
+    } catch {
+      NSLog("[Cutout] 去色核心編譯失敗：%@", String(describing: error))
+      return nil
+    }
+  }()
+
+  /// [base]＝不透明的畫面、[mask]＝跟它對齊的灰階遮罩（同 extent）→
+  /// 邊緣顏色修好的不透明畫面（還沒挖背景）。核心編不出來就原樣回傳
+  static func apply(base: CIImage, mask: CIImage) -> CIImage {
+    guard let ks = kernels else { return base }
+    let (k, unp) = ks
+    let ext = base.extent
+    guard ext.width > 1, ext.height > 1, !ext.isInfinite else { return base }
+    let long = Double(max(ext.width, ext.height))
+    let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: ext)
+    let inv = mask.applyingFilter("CIColorInvert").cropped(to: ext)
+    func blurPremul(_ img: CIImage, _ a: CIImage, _ sigma: Double) -> CIImage {
+      img.applyingFilter(
+        "CIBlendWithMask",
+        parameters: [kCIInputBackgroundImageKey: clear, kCIInputMaskImageKey: a]
+      )
+      .clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: ext)
+    }
+    // 第一段：F=B=I、模糊大
+    let pf1 = blurPremul(base, mask, long * sigma1)
+    let pb1 = blurPremul(base, inv, long * sigma1)
+    guard let f1 = k.apply(extent: ext, arguments: [base, pf1, pb1, mask]),
+      let b1 = unp.apply(extent: ext, arguments: [pb1, base])
+    else { return base }
+    // 第二段：拿第一段的 F、B̂、模糊小
+    let pf2 = blurPremul(f1, mask, long * sigma2)
+    let pb2 = blurPremul(b1, inv, long * sigma2)
+    return k.apply(extent: ext, arguments: [base, pf2, pb2, mask]) ?? base
   }
 }
 
@@ -16037,7 +16690,9 @@ final class MCCutoutMask {
       }
     }
     CVPixelBufferUnlockBaseAddress(buf, [])
-    let img = CIImage(cvPixelBuffer: buf)
+    // 遮罩是數值不是顏色：不做色彩管理（不然 CI 當灰階 gamma 轉線性，0.5 會
+    // 變 0.2，半透明的邊被吃掉一圈；FFmpeg 那條 alphamerge 也是原值）
+    let img = CIImage(cvPixelBuffer: buf, options: [.colorSpace: NSNull()])
     cache[i] = img
     order.append(i)
     if order.count > 6 { cache[order.removeFirst()] = nil }
@@ -16120,9 +16775,21 @@ final class MCCutoutSpec {
     let flipRaw = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: H)
     let xf = flipMask.concatenating(toUp).concatenating(orientN.inverted())
       .concatenating(flipRaw)
+    // 單通道遮罩在 CI 裡可能只有紅色：攤成紅綠藍都是 α 的灰階，反相、混合才不會錯
     let mk = m.transformed(by: xf).clampedToExtent().cropped(to: ext)
+      .applyingFilter(
+        "CIColorMatrix",
+        parameters: [
+          "inputRVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+          "inputGVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+          "inputBVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+          "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+          "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+        ]
+      ).cropped(to: ext)
     let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: ext)
-    let fg = base.applyingFilter(
+    // 去色：邊緣半透明那一圈的顏色先解開（α=1 的地方不變），再挖背景
+    let fg = MCCutoutDecont.apply(base: base, mask: mk).applyingFilter(
       "CIBlendWithMask",
       parameters: [kCIInputBackgroundImageKey: clear, kCIInputMaskImageKey: mk])
     switch bg {
