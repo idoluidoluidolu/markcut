@@ -36,7 +36,8 @@ import java.util.zip.Deflater
 /// - 照片：ML Kit 主體分割（人、寵物、物品都行；模型走 Google Play 服務，
 ///   第一次用要下載）。拿不到（沒有 Play 服務、模型還在下載）就退回內建的
 ///   人像分割，回 kind = "person"
-/// - 影片：ML Kit 人像分割，串流模式（會參考前幾格，邊緣比較不閃），
+/// - 影片：ML Kit 人像分割，串流模式（會參考前幾格，邊緣比較不閃）；人小就
+///   只裁人那一塊給模型，粗遮罩再拿原畫面修邊、防閃（見 CutoutRefine.kt），
 ///   每一格的遮罩寫成 .mcmk（格式見 lib/services/cutout_mask.dart）
 ///
 /// analyzePhoto({path, maxSide, previewSide}) -> {w, h, fullW, fullH, kind, mask,
@@ -361,10 +362,20 @@ internal class CutoutChannel(
 
     // ===== 影片 =====
 
+    /// 導引圖（修邊用的原畫面）長邊；存檔的遮罩長邊（640 跟 960 肉眼看不出差、
+    /// 檔案小一半，Flutter 預覽每格解壓也輕）。導引圖只比存檔大一點就夠：
+    /// 修邊的結果最後也是縮到 640
+    private val guideLong = 720
+    private val storeLong = 640
+
     /// 整支影片每一格的人像遮罩 → .mcmk。MediaCodec 順著硬體解碼（不 seek）；
-    /// 每一格自己轉正、縮小成點陣再給 ML Kit（遮罩就是畫面上看到的方向，
-    /// 跟播放器一樣）。30fps 以上的片子隔格算，跟 iOS 同一套。
-    /// [step] 的第一格記做到哪一步（失敗時跟原因一起回）
+    /// 每一格：
+    /// 1. 轉正、縮成長邊 [guideLong] 的導引圖（只轉裁切框那一塊）
+    /// 2. 裁切框（[CropTracker]：人小就只裁人那一塊）縮到長邊 512 給 ML Kit
+    /// 3. 模型的 256×256 粗遮罩放大回裁切框，[CutoutRefine.bandRefine] 修邊
+    /// 4. 貼回整張、縮到長邊 [storeLong] 存檔；寫檔晚一格（[CutoutRefine.ofd] 防閃）
+    /// 遮罩就是畫面上看到的方向（跟播放器一樣）。30fps 以上的片子隔格算，跟 iOS
+    /// 同一套。[step] 的第一格記做到哪一步（失敗時跟原因一起回）
     private fun videoMask(
         path: String,
         out: String,
@@ -431,6 +442,28 @@ internal class CutoutChannel(
             // 才分得出是「拿不到影像」還是「算遮罩每格都出錯」
             var noImage = 0
             var firstError: String? = null
+            // 導引圖大小（轉正後縮到長邊 guideLong）跟裁切追蹤；畫面大小變了就重來
+            var gw = 0
+            var gh = 0
+            var tracker: CropTracker? = null
+            var guideFull = FloatArray(0)
+            val planes = PlaneCopy()
+            // 防閃要看下一格：這一格先留著，下一格算出來才寫
+            var prevRaw: ByteArray? = null
+            var pendRaw: ByteArray? = null
+            var pendT = 0.0
+            fun emit(t: Double, raw: ByteArray) {
+                val wr = writer ?: return
+                val cur = pendRaw
+                if (cur != null) {
+                    val p = prevRaw
+                    wr.add(pendT, if (p != null) CutoutRefine.ofd(p, cur, raw) else cur)
+                    frames++
+                    prevRaw = cur
+                }
+                pendRaw = raw
+                pendT = t
+            }
             val info = MediaCodec.BufferInfo()
             var inputDone = false
             var outputDone = false
@@ -475,7 +508,28 @@ internal class CutoutChannel(
                         next = t + 1.0 / 30 - 0.5 / 60
                         try {
                             step[0] = "轉正"
-                            val bmp = yuvToUpright(image, rotation, 512)
+                            val crop = image.cropRect
+                            val swap = rotation == 90 || rotation == 270
+                            val uw = if (swap) crop.height() else crop.width()
+                            val uh = if (swap) crop.width() else crop.height()
+                            val (nw, nh) = fit(uw, uh, guideLong)
+                            if (nw != gw || nh != gh || tracker == null) {
+                                gw = nw
+                                gh = nh
+                                tracker = CropTracker(gw, gh)
+                                guideFull = FloatArray(gw * gh)
+                            }
+                            val tr = tracker!!
+                            val box = tr.next()
+                            val (bx, by, bw, bh) = box
+                            planes.load(image)
+                            val kx = uw.toDouble() / gw
+                            val ky = uh.toDouble() / gh
+                            val guide = yuvRegionToRgb(
+                                image, planes, rotation,
+                                bx * kx, by * ky, bw * kx, bh * ky, bw, bh,
+                            )
+                            val bmp = rgbToBitmap(guide, bw, bh, 512)
                             step[0] = "算遮罩"
                             val mask = Tasks.await(
                                 seg.process(InputImage.fromBitmap(bmp, 0)),
@@ -483,16 +537,22 @@ internal class CutoutChannel(
                                 TimeUnit.SECONDS,
                             )
                             bmp.recycle()
-                            val bytes = maskBytes(mask)
-                            step[0] = "寫檔"
-                            val wr = writer ?: CutoutMaskWriter(out, mask.width, mask.height).also { writer = it }
-                            if (mask.width == wr.width && mask.height == wr.height) {
-                                wr.add(t, bytes)
-                                frames++
-                            } else {
-                                wr.add(t, resize(bytes, mask.width, mask.height, wr.width, wr.height))
-                                frames++
+                            val coarse = CutoutRefine.upscaleBilinear(
+                                maskFloats(mask), mask.width, mask.height, bw, bh,
+                            )
+                            step[0] = "修邊"
+                            val refined = CutoutRefine.bandRefine(guide, coarse, bw, bh)
+                            tr.update(refined, box)
+                            java.util.Arrays.fill(guideFull, 0f)
+                            for (y in 0 until bh) {
+                                System.arraycopy(refined, y * bw, guideFull, (y + by) * gw + bx, bw)
                             }
+                            step[0] = "寫檔"
+                            val wr = writer ?: run {
+                                val (sw, sh) = fit(uw, uh, storeLong)
+                                CutoutMaskWriter(out, sw, sh).also { writer = it }
+                            }
+                            emit(t, CutoutRefine.downsampleArea(guideFull, gw, gh, wr.width, wr.height))
                         } catch (e: InterruptedException) {
                             throw e
                         } catch (e: java.io.IOException) {
@@ -516,6 +576,13 @@ internal class CutoutChannel(
                 dec.releaseOutputBuffer(outIdx, false)
             }
             val wr = writer
+            // 最後一格沒有下一格可以比，原樣寫
+            val last = pendRaw
+            if (wr != null && last != null) {
+                wr.add(pendT, last)
+                frames++
+                pendRaw = null
+            }
             if (wr == null || frames == 0) {
                 throw IllegalStateException(
                     "一格遮罩都沒算出來（失敗 ${failed} 格、拿不到影像 ${noImage} 格：${firstError ?: "?"}）",
@@ -541,74 +608,133 @@ internal class CutoutChannel(
         }
     }
 
-    /// 解碼器的一格（YUV_420_888）→ 轉正、長邊不超過 [maxSide] 的 ARGB 點陣。
-    /// 直接照目的地每一點回頭取樣（最近點）：轉正跟縮小一步做完，不必先
-    /// 轉出整張全尺寸的 RGB。10 位元的 P010 每個樣本兩個位元組、值在高位，
-    /// 取後面那個位元組（同找臉那條）
-    private fun yuvToUpright(image: android.media.Image, rotation: Int, maxSide: Int): Bitmap {
+    /// 解碼器一格的三個平面整塊拷進位元組陣列（ByteBuffer 一次一個 get 很慢；
+    /// 陣列重複用，大小變了才重配）
+    private class PlaneCopy {
+        var y = ByteArray(0)
+        var u = ByteArray(0)
+        var v = ByteArray(0)
+
+        fun load(image: android.media.Image) {
+            y = copy(image.planes[0].buffer, y)
+            u = copy(image.planes[1].buffer, u)
+            v = copy(image.planes[2].buffer, v)
+        }
+
+        private fun copy(buf: ByteBuffer, old: ByteArray): ByteArray {
+            val d = buf.duplicate()
+            (d as java.nio.Buffer).position(0)
+            val n = d.limit()
+            val arr = if (old.size == n) old else ByteArray(n)
+            d.get(arr, 0, n)
+            return arr
+        }
+    }
+
+    /// 解碼器的一格（YUV_420_888，平面已拷進 [p]）→ 轉正後 [rx],[ry],[rw],[rh]
+    /// （轉正後全尺寸的像素座標）那一塊，縮成 [ow]×[oh] 的 RGB（交錯）。
+    /// 每個輸出點取 2×2 個子點平均亮度（縮一半左右不會鋸齒），色度取中心那點。
+    /// 轉正跟縮小一步做完。10 位元的 P010 每個樣本兩個位元組、值在高位，取後面
+    /// 那個位元組（同找臉那條）
+    private fun yuvRegionToRgb(
+        image: android.media.Image,
+        p: PlaneCopy,
+        rotation: Int,
+        rx: Double,
+        ry: Double,
+        rw: Double,
+        rh: Double,
+        ow: Int,
+        oh: Int,
+    ): ByteArray {
         val crop = image.cropRect
         val sw = crop.width()
         val sh = crop.height()
         val swap = rotation == 90 || rotation == 270
         val uw = if (swap) sh else sw
         val uh = if (swap) sw else sh
-        val (ow, oh) = fit(uw, uh, maxSide)
         val hi = if (image.format == 0x36) 1 else 0
-        val yPlane = image.planes[0]
-        val uPlane = image.planes[1]
-        val vPlane = image.planes[2]
-        val yBuf = yPlane.buffer
-        val uBuf = uPlane.buffer
-        val vBuf = vPlane.buffer
-        val yRow = yPlane.rowStride
-        val yPix = yPlane.pixelStride
-        val uRow = uPlane.rowStride
-        val uPix = uPlane.pixelStride
-        val vRow = vPlane.rowStride
-        val vPix = vPlane.pixelStride
-        val yLast = yBuf.limit() - 1
-        val uLast = uBuf.limit() - 1
-        val vLast = vBuf.limit() - 1
-        val px = IntArray(ow * oh)
+        val yRow = image.planes[0].rowStride
+        val yPix = image.planes[0].pixelStride
+        val uRow = image.planes[1].rowStride
+        val uPix = image.planes[1].pixelStride
+        val vRow = image.planes[2].rowStride
+        val vPix = image.planes[2].pixelStride
+        val ya = p.y
+        val ua = p.u
+        val va = p.v
+        val yLast = ya.size - 1
+        val uLast = ua.size - 1
+        val vLast = va.size - 1
+        val fx = rw / ow
+        val fy = rh / oh
+        val out = ByteArray(ow * oh * 3)
+        // 轉正後的 (ux, uy) → 解碼器格子裡的線性位置。旋轉旗標是「顯示時要順時針
+        // 轉幾度」
+        fun sx(ux: Int, uy: Int): Int = crop.left + when (rotation) {
+            90 -> uy
+            180 -> sw - 1 - ux
+            270 -> sw - 1 - uy
+            else -> ux
+        }
+        fun sy(ux: Int, uy: Int): Int = crop.top + when (rotation) {
+            90 -> sh - 1 - ux
+            180 -> sh - 1 - uy
+            270 -> ux
+            else -> uy
+        }
+        fun luma(ux: Int, uy: Int): Int {
+            val x = sx(ux, uy)
+            val y = sy(ux, uy)
+            return ya[minOf(y * yRow + x * yPix + hi, yLast)].toInt() and 0xFF
+        }
         for (oy in 0 until oh) {
-            val uy = ((oy + 0.5) * uh / oh).toInt().coerceIn(0, uh - 1)
+            val uyA = (ry + (oy + 0.25) * fy).toInt().coerceIn(0, uh - 1)
+            val uyB = (ry + (oy + 0.75) * fy).toInt().coerceIn(0, uh - 1)
+            val uyC = (ry + (oy + 0.5) * fy).toInt().coerceIn(0, uh - 1)
             for (ox in 0 until ow) {
-                val ux = ((ox + 0.5) * uw / ow).toInt().coerceIn(0, uw - 1)
-                // 轉正後的 (ux, uy) 回到解碼器格子裡的 (x, y)。旋轉旗標是
-                // 「顯示時要順時針轉幾度」
-                val x: Int
-                val y: Int
-                when (rotation) {
-                    90 -> {
-                        x = uy
-                        y = sh - 1 - ux
-                    }
-                    180 -> {
-                        x = sw - 1 - ux
-                        y = sh - 1 - uy
-                    }
-                    270 -> {
-                        x = sw - 1 - uy
-                        y = ux
-                    }
-                    else -> {
-                        x = ux
-                        y = uy
-                    }
-                }
-                val sx = crop.left + x
-                val sy = crop.top + y
-                val yy = (yBuf.get(minOf(sy * yRow + sx * yPix + hi, yLast)).toInt() and 0xFF)
-                val cx = sx / 2
-                val cy = sy / 2
-                val u = (uBuf.get(minOf(cy * uRow + cx * uPix + hi, uLast)).toInt() and 0xFF) - 128
-                val v = (vBuf.get(minOf(cy * vRow + cx * vPix + hi, vLast)).toInt() and 0xFF) - 128
-                // BT.601（找人用的，色準不重要）
+                val uxA = (rx + (ox + 0.25) * fx).toInt().coerceIn(0, uw - 1)
+                val uxB = (rx + (ox + 0.75) * fx).toInt().coerceIn(0, uw - 1)
+                val uxC = (rx + (ox + 0.5) * fx).toInt().coerceIn(0, uw - 1)
+                val yy = (luma(uxA, uyA) + luma(uxB, uyA) + luma(uxA, uyB) + luma(uxB, uyB) + 2) shr 2
+                val cx = sx(uxC, uyC) / 2
+                val cy = sy(uxC, uyC) / 2
+                val u = (ua[minOf(cy * uRow + cx * uPix + hi, uLast)].toInt() and 0xFF) - 128
+                val v = (va[minOf(cy * vRow + cx * vPix + hi, vLast)].toInt() and 0xFF) - 128
+                // BT.601（修邊、找人用的，色準不重要，前後格一致就好）
                 val c = (yy - 16).coerceAtLeast(0) * 1192
-                val r = ((c + 1634 * v) shr 10).coerceIn(0, 255)
-                val g = ((c - 833 * v - 400 * u) shr 10).coerceIn(0, 255)
-                val b = ((c + 2066 * u) shr 10).coerceIn(0, 255)
-                px[oy * ow + ox] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                val o = (oy * ow + ox) * 3
+                out[o] = ((c + 1634 * v) shr 10).coerceIn(0, 255).toByte()
+                out[o + 1] = ((c - 833 * v - 400 * u) shr 10).coerceIn(0, 255).toByte()
+                out[o + 2] = ((c + 2066 * u) shr 10).coerceIn(0, 255).toByte()
+            }
+        }
+        return out
+    }
+
+    /// RGB（交錯，[w]×[h]）→ 長邊不超過 [maxSide] 的 ARGB 點陣（給 ML Kit）。
+    /// 要縮的話每點取 2×2 子點平均
+    private fun rgbToBitmap(rgb: ByteArray, w: Int, h: Int, maxSide: Int): Bitmap {
+        val (ow, oh) = fit(w, h, maxSide)
+        val px = IntArray(ow * oh)
+        val fx = w.toDouble() / ow
+        val fy = h.toDouble() / oh
+        for (oy in 0 until oh) {
+            val ya = ((oy + 0.25) * fy).toInt().coerceIn(0, h - 1)
+            val yb = ((oy + 0.75) * fy).toInt().coerceIn(0, h - 1)
+            for (ox in 0 until ow) {
+                val xa = ((ox + 0.25) * fx).toInt().coerceIn(0, w - 1)
+                val xb = ((ox + 0.75) * fx).toInt().coerceIn(0, w - 1)
+                var r = 0
+                var g = 0
+                var b = 0
+                for (i in intArrayOf(ya * w + xa, ya * w + xb, yb * w + xa, yb * w + xb)) {
+                    r += rgb[i * 3].toInt() and 0xFF
+                    g += rgb[i * 3 + 1].toInt() and 0xFF
+                    b += rgb[i * 3 + 2].toInt() and 0xFF
+                }
+                px[oy * ow + ox] = (0xFF shl 24) or (((r + 2) shr 2) shl 16) or
+                    (((g + 2) shr 2) shl 8) or ((b + 2) shr 2)
             }
         }
         return Bitmap.createBitmap(px, ow, oh, Bitmap.Config.ARGB_8888)
@@ -639,6 +765,19 @@ internal class CutoutChannel(
         for (i in 0 until n) {
             if (buf.remaining() < 4) break
             out[i] = toByte(buf.float)
+        }
+        return out
+    }
+
+    /// ML Kit 人像遮罩 → 0~1 浮點（影片修邊用，不先量化成位元組）
+    private fun maskFloats(mask: SegmentationMask): FloatArray {
+        val n = mask.width * mask.height
+        val out = FloatArray(n)
+        val buf: ByteBuffer = mask.buffer
+        (buf as java.nio.Buffer).rewind()
+        for (i in 0 until n) {
+            if (buf.remaining() < 4) break
+            out[i] = buf.float.coerceIn(0f, 1f)
         }
         return out
     }
