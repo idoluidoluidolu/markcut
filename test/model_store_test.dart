@@ -53,6 +53,12 @@ class _FakeClient extends http.BaseClient {
   }
 }
 
+class _Fake416 extends http.BaseClient {
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async =>
+      http.StreamedResponse(Stream<List<int>>.fromIterable(const []), 416);
+}
+
 String _sha(List<int> b) => crypto.sha256.convert(b).toString();
 
 void main() {
@@ -119,6 +125,24 @@ void main() {
     expect(File('$p/b.bin').readAsBytesSync(), b);
     final rangeReq = fake.requests.where((r) => r.url.pathSegments.last == 'b.bin').single;
     expect(rangeReq.headers['Range'], 'bytes=40-');
+  });
+
+  test('上一趟收滿了還沒搬：本機驗過就好，不再連網；壞的刪掉重下', () async {
+    final part = File('${dir.path}/p1/.part/b.bin')..createSync(recursive: true);
+    part.writeAsBytesSync(b);
+    final fake = _FakeClient({'a.bin': a, 'b.bin': b});
+    ModelStore.instance.client = () => fake;
+    final p = await ModelStore.instance.ensure(pack);
+    expect(File('$p/b.bin').readAsBytesSync(), b);
+    expect(fake.requests.map((r) => r.url.pathSegments.last), ['a.bin']);
+  });
+
+  test('伺服器回 416：暫存檔刪掉（下次從頭），不會每次都卡在 416', () async {
+    final part = File('${dir.path}/p1/.part/a.bin')..createSync(recursive: true);
+    part.writeAsBytesSync(a.sublist(0, 5));
+    ModelStore.instance.client = () => _Fake416();
+    await expectLater(ModelStore.instance.ensure(pack), throwsA(isA<HttpException>()));
+    expect(part.existsSync(), isFalse);
   });
 
   test('取消：丟 ModelCancelled，收一半的留著', () async {

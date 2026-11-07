@@ -235,6 +235,23 @@ class CutoutDetect {
     }
   }
 
+  static bool? _refineOk;
+
+  /// 這台能不能精修（iOS 17＋、記憶體夠；Android 記憶體 6GB 以上）。
+  /// 不能的話不顯示按鈕、也不下載模型（iOS 15/16 下載完才發現不能用會白下載 90MB）
+  static Future<bool> refineSupported() async {
+    final cached = _refineOk;
+    if (cached != null) return cached;
+    if (kIsWeb) return _refineOk = false;
+    try {
+      return _refineOk = await _ch.invokeMethod<bool>('refineSupported') ?? false;
+    } on MissingPluginException {
+      return _refineOk = false;
+    } on PlatformException {
+      return _refineOk = false;
+    }
+  }
+
   /// 精修（BiRefNet）：模型看整張照片，跟選的主體遮罩融合——髮絲、毛邊。
   /// [model]＝ModelStore 下載好的路徑。BiRefNet 認的主體跟選的不一樣回
   /// [CutoutRefineResult.unsuitable]；做不了回 null（原因在 [lastError]）

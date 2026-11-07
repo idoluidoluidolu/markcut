@@ -15413,6 +15413,13 @@ extension AppDelegate {
           }
           reply(r)
         }
+      case "refineSupported":
+        // Core ML 版 BiRefNet 要 iOS 17；記憶體太小（3GB 那幾台）跑 1024² 太勉強
+        if #available(iOS 17.0, *) {
+          result(ProcessInfo.processInfo.physicalMemory >= 3_500_000_000)
+        } else {
+          result(false)
+        }
       case "refinePhoto":
         guard let path = args["path"] as? String, !path.isEmpty,
           let model = args["model"] as? String, !model.isEmpty
@@ -15786,8 +15793,22 @@ enum MCCutout {
     cacheLock.unlock()
     let (fw, fh) = fit(size, refineLong)
     guard let base = try baseMask(ids: ids, w: fw, h: fh) else { return nil }
-    let bm = try matte(model: model, w: fw, h: fh)
+    var bm = try matte(model: model, w: fw, h: fh)
     let baseF = base.map { Float($0) / 255 }
+    // BiRefNet 不分是哪個主體：沒選的主體那幾塊（又不是選的）歸 0，不然融合時
+    // 會把貼著選的主體的那一段帶回來（例：人＋狗只選人）
+    cacheLock.lock()
+    let obs = cacheObservation as? VNInstanceMaskObservation
+    cacheLock.unlock()
+    if let o = obs {
+      var others = IndexSet()
+      for i in o.allInstances where !ids.contains(i) { others.insert(i) }
+      if !others.isEmpty, let other = try baseMask(ids: Array(others), w: fw, h: fh) {
+        for i in 0..<min(bm.count, other.count) where other[i] >= 128 && base[i] < 128 {
+          bm[i] = 0
+        }
+      }
+    }
     let score = MCCutoutRefine.iou(baseF, bm)
     if score < 0.6 { return (false, score, [], fw, fh) }
     let long = max(fw, fh)
@@ -15871,6 +15892,11 @@ enum MCCutout {
       let tmp = try MLModel.compileModel(at: pkg)
       try? fm.removeItem(at: compiled)
       try fm.moveItem(at: tmp, to: compiled)
+      // 模型＋編好的版本快 200MB：隨時可以重新下載，不要佔使用者的 iCloud 備份
+      var dir = pkg.deletingLastPathComponent()
+      var rv = URLResourceValues()
+      rv.isExcludedFromBackup = true
+      try? dir.setResourceValues(rv)
     }
     let cfg = MLModelConfiguration()
     cfg.computeUnits = .all
@@ -15983,6 +16009,7 @@ enum MCCutout {
     var pendT = 0.0
     var timed = 0
     var timeSum = 0.0
+    var probeTick = 0
     func emit(_ t: Double, _ raw: [UInt8]) throws {
       guard let w = writer else { return }
       if let cur = pendRaw {
@@ -16020,6 +16047,31 @@ enum MCCutout {
             guideFull = [Float](repeating: 0, count: gw * gh)
           }
           guard let tr = tracker else { return true }
+          // 只裁一塊的時候，每 30 格整張看一眼（小圖、不留狀態的請求）：
+          // 框外有人（後來走進畫面的）就下一格整張重找
+          if tr.cropping && probeTick % 30 == 0 {
+            let (pw, ph) = fit(e.size, 256)
+            let small = src
+              .transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY))
+              .transformed(
+                by: CGAffineTransform(
+                  scaleX: CGFloat(pw) / e.width, y: CGFloat(ph) / e.height))
+            var pbuf: CVPixelBuffer?
+            if let pp = makePool(pw, ph) { CVPixelBufferPoolCreatePixelBuffer(nil, pp, &pbuf) }
+            if let pb2 = pbuf {
+              frameContext.render(small, to: pb2)
+              let req = VNGeneratePersonSegmentationRequest()
+              req.qualityLevel = .fast
+              req.outputPixelFormat = kCVPixelFormatType_OneComponent32Float
+              if (try? VNImageRequestHandler(cvPixelBuffer: pb2, orientation: .up).perform([req]))
+                != nil,
+                let mp = req.results?.first?.pixelBuffer, let plane = floatPlane(mp)
+              {
+                tr.probe(plane.0, plane.1, plane.2)
+              }
+            }
+          }
+          probeTick += 1
           let box = tr.next()
           let (bx, by, bw, bh) = (box[0], box[1], box[2], box[3])
           if pool == nil || poolW != bw || poolH != bh {
@@ -16597,6 +16649,35 @@ final class MCCropTracker {
     self.gh = gh
   }
 
+  /// 現在是不是只裁一塊：裁切的時候框外看不到，要另外整張看一眼（[probe]）
+  var cropping: Bool {
+    if !has { return false }
+    let c = next()
+    return c[2] < gw || c[3] < gh
+  }
+
+  /// 整張看一眼的結果（[pw]×[ph]、對應整張導引圖）：框外有人就下一格整張重找
+  func probe(_ probe: [Float], _ pw: Int, _ ph: Int) {
+    if !cropping { return }
+    let c = next()
+    let kx = Double(gw) / Double(pw)
+    let ky = Double(gh) / Double(ph)
+    let m = Double(max(gw, gh)) * 0.03
+    var outside = 0
+    for y in 0..<ph {
+      let gy = (Double(y) + 0.5) * ky
+      for x in 0..<pw where probe[y * pw + x] >= 0.5 {
+        let gx = (Double(x) + 0.5) * kx
+        if gx < Double(c[0]) - m || gx > Double(c[0] + c[2]) + m || gy < Double(c[1]) - m
+          || gy > Double(c[1] + c[3]) + m
+        {
+          outside += 1
+        }
+      }
+    }
+    if outside >= max(4, pw * ph / 1000) { has = false }
+  }
+
   /// [x, y, w, h]
   func next() -> [Int] {
     if !has { return [0, 0, gw, gh] }
@@ -16628,8 +16709,11 @@ final class MCCropTracker {
       has = false
       return
     }
-    let full = w == gw && h == gh
-    if !full && (x0 <= 1 || y0 <= 1 || x1 >= w - 2 || y1 >= h - 2) {
+    // 碰到裁切框的邊＝人快跑出去了；那條邊剛好是畫面的邊（人本來就被畫面
+    // 切掉）不算，不然會整張、裁切一格一格交替
+    if (x0 <= 1 && ox > 0) || (y0 <= 1 && oy > 0) || (x1 >= w - 2 && ox + w < gw)
+      || (y1 >= h - 2 && oy + h < gh)
+    {
       has = false
       return
     }
@@ -16715,25 +16799,48 @@ enum MCCutoutDecont {
     let (k, unp) = ks
     let ext = base.extent
     guard ext.width > 1, ext.height > 1, !ext.isInfinite else { return base }
-    let long = Double(max(ext.width, ext.height))
-    let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: ext)
-    let inv = mask.applyingFilter("CIColorInvert").cropped(to: ext)
+    // 估計（F̂、B̂）本來就是模糊量：在 1/4 解析度算（每格四次全解析度大模糊，
+    // 舊機預覽會掉格），最後一步放大回原尺寸、拿原尺寸的 I 跟 α 套公式——
+    // 同 FFmpeg 的 cutoutDecontFilter
+    let q: CGFloat = 0.25
+    let qext = CGRect(
+      x: 0, y: 0, width: max(1, (ext.width * q).rounded(.up)),
+      height: max(1, (ext.height * q).rounded(.up)))
+    func down(_ img: CIImage) -> CIImage {
+      img.transformed(by: CGAffineTransform(translationX: -ext.minX, y: -ext.minY))
+        .applyingFilter(
+          "CILanczosScaleTransform",
+          parameters: [kCIInputScaleKey: q, kCIInputAspectRatioKey: 1.0]
+        )
+        .cropped(to: qext)
+    }
+    func up(_ img: CIImage) -> CIImage {
+      img.clampedToExtent()
+        .transformed(by: CGAffineTransform(scaleX: 1 / q, y: 1 / q))
+        .transformed(by: CGAffineTransform(translationX: ext.minX, y: ext.minY))
+        .cropped(to: ext)
+    }
+    let long = Double(max(qext.width, qext.height))
+    let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: qext)
+    let bq = down(base)
+    let mq = down(mask)
+    let invq = mq.applyingFilter("CIColorInvert").cropped(to: qext)
     func blurPremul(_ img: CIImage, _ a: CIImage, _ sigma: Double) -> CIImage {
       img.applyingFilter(
         "CIBlendWithMask",
         parameters: [kCIInputBackgroundImageKey: clear, kCIInputMaskImageKey: a]
       )
-      .clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: ext)
+      .clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: qext)
     }
-    // 第一段：F=B=I、模糊大
-    let pf1 = blurPremul(base, mask, long * sigma1)
-    let pb1 = blurPremul(base, inv, long * sigma1)
-    guard let f1 = k.apply(extent: ext, arguments: [base, pf1, pb1, mask]),
-      let b1 = unp.apply(extent: ext, arguments: [pb1, base])
+    // 第一段（1/4）：F=B=I、模糊大
+    let pf1 = blurPremul(bq, mq, long * sigma1)
+    let pb1 = blurPremul(bq, invq, long * sigma1)
+    guard let f1 = k.apply(extent: qext, arguments: [bq, pf1, pb1, mq]),
+      let b1 = unp.apply(extent: qext, arguments: [pb1, bq])
     else { return base }
-    // 第二段：拿第一段的 F、B̂、模糊小
-    let pf2 = blurPremul(f1, mask, long * sigma2)
-    let pb2 = blurPremul(b1, inv, long * sigma2)
+    // 第二段（1/4）只算估計：拿第一段的 F、B̂、模糊小，放大回原尺寸再套公式
+    let pf2 = up(blurPremul(f1, mq, long * sigma2))
+    let pb2 = up(blurPremul(b1, invq, long * sigma2))
     return k.apply(extent: ext, arguments: [base, pf2, pb2, mask]) ?? base
   }
 }

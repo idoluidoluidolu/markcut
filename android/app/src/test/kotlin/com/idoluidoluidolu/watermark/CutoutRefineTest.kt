@@ -111,4 +111,52 @@ class CutoutRefineTest {
         t.update(FloatArray(gw * gh), intArrayOf(0, 0, gw, gh))
         assertArrayEquals(intArrayOf(0, 0, gw, gh), t.next())
     }
+
+    @Test
+    fun trackerDoesNotFlipWhenPersonIsCutByFrameEdge() {
+        // 小小的人站在畫面下緣（腳被畫面切掉）：裁切框貼著畫面底，不能每格
+        // 「碰邊 → 整張 → 裁切」交替
+        val gw = 540
+        val gh = 960
+        val t = CropTracker(gw, gh)
+        fun person(box: IntArray): FloatArray {
+            val (ox, oy, w, h) = box
+            val a = FloatArray(w * h)
+            for (y in 780 until 960) for (x in 230 until 310) {
+                val cx = x - ox
+                val cy = y - oy
+                if (cx in 0 until w && cy in 0 until h) a[cy * w + cx] = 1f
+            }
+            return a
+        }
+        val seq = mutableListOf<Boolean>()
+        repeat(6) {
+            val box = t.next()
+            seq.add(box[2] == gw && box[3] == gh)
+            t.update(person(box), box)
+        }
+        assertEquals("第一格整張、之後一直裁切：$seq", listOf(true, false, false, false, false, false), seq)
+    }
+
+    @Test
+    fun probeFindsSomeoneOutsideTheCrop() {
+        val gw = 540
+        val gh = 960
+        val t = CropTracker(gw, gh)
+        val full = FloatArray(gw * gh)
+        for (y in 600 until 800) for (x in 350 until 450) full[y * gw + x] = 1f
+        t.update(full, intArrayOf(0, 0, gw, gh))
+        assertTrue(t.cropping)
+        // 整張看一眼（54×96 的小圖）：只有框裡那個人 → 照舊裁切
+        val pw = 54
+        val ph = 96
+        val p = FloatArray(pw * ph)
+        for (y in 60 until 80) for (x in 35 until 45) p[y * pw + x] = 1f
+        t.probe(p, pw, ph)
+        assertTrue(t.cropping)
+        // 左上角走進來一個人 → 下一格整張
+        for (y in 5 until 25) for (x in 3 until 10) p[y * pw + x] = 1f
+        t.probe(p, pw, ph)
+        assertArrayEquals(intArrayOf(0, 0, gw, gh), t.next())
+    }
 }

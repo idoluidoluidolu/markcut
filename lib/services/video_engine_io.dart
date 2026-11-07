@@ -415,9 +415,10 @@ String _eq(TimelineClip c) => c.color.ffmpeg;
 /// 差值先除 2 存（不溢位）再乘 2α(1−α)。第一段 F=B=I、模糊大
 /// （[kCutoutDecontSigma1]），第二段拿第一段的 F、B̂、模糊小。
 ///
-/// 顏色估計本來就是模糊量：整套在 1/4 解析度算（全解析度慢 9 倍，實測
-/// 跟全解析度只差 1.3 階、不去色差 13.7），放大回來只用在邊帶——人裡面
-/// （α=1）跟外面（α=0）照原畫面、一個位元都不動
+/// 顏色估計（F̂、B̂）本來就是模糊量：在 1/4 解析度算（全解析度慢 9 倍）；
+/// 最後一步放大回原尺寸，拿原尺寸的 I 跟 α 套公式（髮絲的細節還在，跟
+/// iOS 合成器、照片那兩條一樣）。只用在邊帶——人裡面（α=1）跟外面（α=0）
+/// 照原畫面、一個位元都不動
 @visibleForTesting
 String cutoutDecontFilter(
   int k, {
@@ -439,60 +440,81 @@ String cutoutDecontFilter(
   String est(String inp, String a, String sigma, String tail) =>
       '[$inp][$a]alphamerge,premultiply=inplace=1,gblur=sigma=$sigma,'
       'unpremultiply=inplace=1,format=gbrp,$tail;';
+  // F＝lerp(F̂, I, α)＋α(1−α)(F̂−B̂)：[fa]、[fb]＝F̂ 兩份、[bh]＝B̂、[img]＝I、
+  // [am]、[ax]＝α 兩份（gbrp），輸出 [o]
+  String formula(
+    String tag,
+    String fa,
+    String fb,
+    String bh,
+    String img,
+    String am,
+    String ax,
+    String o,
+  ) =>
+      '[$fa][$img][$am]maskedmerge[${l('t$tag')}];'
+      '[$fb][$bh]${lut2(half)}[${l('e$tag')}];'
+      '[${l('e$tag')}][$ax]${lut2(mul)}[${l('x$tag')}];'
+      '[${l('t$tag')}][${l('x$tag')}]blend=all_mode=grainmerge[$o];';
   final b = StringBuffer()
-    ..write('[$mask]split=2[${l('ms')}][${l('mq')}];')
+    ..write('[$mask]split=3[${l('ms')}][${l('mq')}][${l('mf')}];')
     ..write(
       '[${l('mq')}]scale=$qw:$qh:flags=area,'
-      'split=8[${l('m1f')}][${l('m1b')}][${l('m1m')}][${l('m1x')}]'
-      '[${l('m2f')}][${l('m2b')}][${l('m2m')}][${l('m2x')}];',
+      'split=6[${l('m1f')}][${l('m1b')}][${l('m1m')}][${l('m1x')}]'
+      '[${l('m2f')}][${l('m2b')}];',
     )
-    ..write('[$frame]split=2[${l('I')}][${l('J')}];')
+    ..write('[${l('mf')}]format=gbrp,split=2[${l('am')}][${l('ax')}];')
+    ..write('[$frame]split=3[${l('I')}][${l('J')}][${l('K')}];')
+    ..write('[${l('K')}]format=gbrp[${l('ig')}];')
     ..write(
       '[${l('J')}]scale=$qw:$qh:flags=area,format=gbrp,'
-      'split=4[${l('i1')}][${l('i2')}][${l('i3')}][${l('i4')}];',
+      'split=3[${l('i1')}][${l('i2')}][${l('i3')}];',
     );
-  // 一段：F̂、B̂ 兩個估計，再組出 F
-  void pass(
-    int p,
-    String fin,
-    String bin,
-    String iImg,
-    String sigma, {
-    required String fOut,
-    String? bOut,
-  }) {
-    b
-      ..write(
-        est(fin, l('m${p}f'), sigma, 'split=2[${l('f${p}a')}][${l('f${p}b')}]'),
-      )
-      ..write('[${l('m${p}b')}]negate[${l('m${p}n')}];')
-      ..write(
-        est(
-          bin,
-          l('m${p}n'),
-          sigma,
-          bOut == null
-              ? 'null[${l('b${p}a')}]'
-              : 'split=2[${l('b${p}a')}][$bOut]',
-        ),
-      )
-      ..write(
-        '[${l('m${p}m')}]format=gbrp[${l('g${p}m')}];'
-        '[${l('f${p}a')}][$iImg][${l('g${p}m')}]maskedmerge[${l('t$p')}];',
-      )
-      ..write('[${l('f${p}b')}][${l('b${p}a')}]${lut2(half)}[${l('e$p')}];')
-      ..write(
-        '[${l('m${p}x')}]format=gbrp[${l('g${p}x')}];'
-        '[${l('e$p')}][${l('g${p}x')}]${lut2(mul)}[${l('x$p')}];',
-      )
-      ..write('[${l('t$p')}][${l('x$p')}]blend=all_mode=grainmerge[$fOut];');
-  }
-
-  pass(1, l('i1'), l('i2'), l('i3'), s1, fOut: l('o1'), bOut: l('bh1'));
-  pass(2, l('o1'), l('bh1'), l('i4'), s2, fOut: l('o2'));
+  // 第一段（1/4 解析度）：F=B=I → F1、B̂1
+  b
+    ..write(est(l('i1'), l('m1f'), s1, 'split=2[${l('f1a')}][${l('f1b')}]'))
+    ..write('[${l('m1b')}]negate[${l('m1n')}];')
+    ..write(
+      est(l('i2'), l('m1n'), s1, 'split=2[${l('b1a')}][${l('bh1')}]'),
+    )
+    ..write(
+      '[${l('m1m')}]format=gbrp[${l('g1m')}];'
+      '[${l('m1x')}]format=gbrp[${l('g1x')}];',
+    )
+    ..write(
+      formula(
+        '1',
+        l('f1a'),
+        l('f1b'),
+        l('b1a'),
+        l('i3'),
+        l('g1m'),
+        l('g1x'),
+        l('o1'),
+      ),
+    );
+  // 第二段：只算估計（1/4 解析度），放大回原尺寸再套公式
+  b
+    ..write(
+      est(l('o1'), l('m2f'), s2, 'scale=$w:$h:flags=bilinear,split=2[${l('F2a')}][${l('F2b')}]'),
+    )
+    ..write('[${l('m2b')}]negate[${l('m2n')}];')
+    ..write(est(l('bh1'), l('m2n'), s2, 'scale=$w:$h:flags=bilinear[${l('B2')}]'))
+    ..write(
+      formula(
+        '2',
+        l('F2a'),
+        l('F2b'),
+        l('B2'),
+        l('ig'),
+        l('am'),
+        l('ax'),
+        l('o2'),
+      ),
+    );
   // 只有邊帶（0<α<255）換成去色結果；色度平面是半解析度，遮罩跟著縮
   b
-    ..write('[${l('o2')}]scale=$w:$h:flags=bilinear,format=yuva420p[${l('F')}];')
+    ..write('[${l('o2')}]format=yuva420p[${l('F')}];')
     ..write(
       "[${l('ms')}]lut=c0='if(eq(val,255)+eq(val,0),255,0)',"
       'split=4[${l('k0')}][${l('k1')}][${l('k2')}][${l('k3')}];'

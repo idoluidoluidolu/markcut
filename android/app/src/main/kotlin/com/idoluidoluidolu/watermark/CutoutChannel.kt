@@ -156,6 +156,11 @@ internal class CutoutChannel(
                         }
                     }
                 }
+                "refineSupported" -> {
+                    // BiRefNet 1024² 在 ONNX Runtime（CPU）上峰值記憶體可能上 GB：
+                    // 記憶體 6GB 以下的手機可能被系統直接砍掉（try/catch 接不到），不開放
+                    result.success(deviceMemBytes() >= 6L * 1000 * 1000 * 1000)
+                }
                 "refinePhoto" -> {
                     val path = call.argument<String>("path")
                     val model = call.argument<String>("model")
@@ -377,10 +382,30 @@ internal class CutoutChannel(
         val (ow, oh) = fit(w, h, maxSide)
         var full = baseMask(ids)
         if (refineModel != null && ids.isNotEmpty()) {
-            val matte = cacheMatte ?: runBiRefNet(refineModel)
-            if (matte != null) full = fusedBytes(full, matte, w, h)
+            val raw = cacheMatte ?: runBiRefNet(refineModel)
+            if (raw != null) {
+                // 同 refinePhoto：沒選的主體不算、一致度不夠就照未精修的
+                val matte = matteWithout(raw, ids)
+                val baseF = FloatArray(w * h) { (full[it].toInt() and 0xFF) / 255f }
+                if (CutoutMatting.iou(baseF, matte) >= 0.6) full = fusedBytes(full, matte, w, h)
+            }
         }
         return mapOf("w" to ow, "h" to oh, "mask" to resize(full, w, h, ow, oh))
+    }
+
+    /// BiRefNet 不分是哪個主體：沒選的主體那幾塊（而且不是選的主體）歸 0，
+    /// 不然融合時會把貼著選的主體的那一段帶回來（例：人＋狗只選人）
+    private fun matteWithout(matte: FloatArray, ids: List<Int>): FloatArray {
+        if (cachePerson != null || cacheSubjects.isEmpty()) return matte
+        val others = cacheSubjects.map { it.id }.filter { it !in ids }
+        if (others.isEmpty()) return matte
+        val w = cacheW
+        val h = cacheH
+        val o = composeSubjects(cacheSubjects, others, w, h)
+        val sel = composeSubjects(cacheSubjects, ids, w, h)
+        return FloatArray(matte.size) { i ->
+            if ((o[i].toInt() and 0xFF) >= 128 && (sel[i].toInt() and 0xFF) < 128) 0f else matte[i]
+        }
     }
 
     /// 選的這幾個主體的遮罩（快取那張照片的分析解析度）
@@ -393,6 +418,16 @@ internal class CutoutChannel(
             ids.isEmpty() -> ByteArray(w * h)
             else -> refineFull(composeSubjects(cacheSubjects, ids, w, h), w, h)
         }
+    }
+
+    /// 手機的實體記憶體（/proc/meminfo 的 MemTotal；讀不到回 0）
+    private fun deviceMemBytes(): Long = try {
+        File("/proc/meminfo").useLines { lines ->
+            val line = lines.firstOrNull { it.startsWith("MemTotal:") } ?: return@useLines 0L
+            line.filter { it.isDigit() }.toLong() * 1024
+        }
+    } catch (_: Throwable) {
+        0L
     }
 
     // ===== 精修（BiRefNet-lite，模型用到才下載，見 lib/services/model_store.dart）=====
@@ -417,7 +452,7 @@ internal class CutoutChannel(
         }
         val w = cacheW
         val h = cacheH
-        val matte = cacheMatte ?: runBiRefNet(model) ?: return null
+        val matte = matteWithout(cacheMatte ?: runBiRefNet(model) ?: return null, ids)
         val base = baseMask(ids)
         val baseF = FloatArray(w * h) { (base[it].toInt() and 0xFF) / 255f }
         val score = CutoutMatting.iou(baseF, matte)
@@ -451,9 +486,11 @@ internal class CutoutChannel(
         val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
         val session = refineSession.takeIf { refineSessionPath == model } ?: run {
             refineSession?.close()
-            val opts = ai.onnxruntime.OrtSession.SessionOptions()
-            opts.setIntraOpNumThreads(maxOf(1, minOf(4, Runtime.getRuntime().availableProcessors())))
-            env.createSession(model, opts).also {
+            refineSession = null
+            ai.onnxruntime.OrtSession.SessionOptions().use { opts ->
+                opts.setIntraOpNumThreads(maxOf(1, minOf(4, Runtime.getRuntime().availableProcessors())))
+                env.createSession(model, opts)
+            }.also {
                 refineSession = it
                 refineSessionPath = model
             }
@@ -564,6 +601,8 @@ internal class CutoutChannel(
         var writer: CutoutMaskWriter? = null
         // 在 try 裡面建：建不起來（原生程式庫載不到）也要走 finally 把 extractor 收掉
         var segmenter: com.google.mlkit.vision.segmentation.Segmenter? = null
+        // 裁切時整張看一眼用的（不留前後格狀態，見 CropTracker.probe）
+        var probe: com.google.mlkit.vision.segmentation.Segmenter? = null
         var ok = false
         try {
             // 排隊的時候就被叫停了（Activity 收掉、Dart 先按停）：不用再建模型、開解碼器
@@ -719,9 +758,29 @@ internal class CutoutChannel(
                                 guideFull = FloatArray(gw * gh)
                             }
                             val tr = tracker!!
+                            planes.load(image)
+                            // 只裁一塊的時候，每 30 格整張看一眼（小圖、不留狀態的模型）：
+                            // 框外有人（後來走進畫面的）就下一格整張重找
+                            if (tr.cropping && frameNo % 30 == 0) {
+                                step[0] = "整張看一眼"
+                                val (pw0, ph0) = fit(uw, uh, 256)
+                                val small = yuvRegionToRgb(
+                                    image, planes, rotation,
+                                    0.0, 0.0, uw.toDouble(), uh.toDouble(), pw0, ph0,
+                                )
+                                val pb = rgbToBitmap(small, pw0, ph0, 256)
+                                val ps = probe ?: Segmentation.getClient(
+                                    SelfieSegmenterOptions.Builder()
+                                        .setDetectorMode(SelfieSegmenterOptions.SINGLE_IMAGE_MODE)
+                                        .enableRawSizeMask()
+                                        .build(),
+                                ).also { probe = it }
+                                val pm = Tasks.await(ps.process(InputImage.fromBitmap(pb, 0)), 10, TimeUnit.SECONDS)
+                                pb.recycle()
+                                tr.probe(maskFloats(pm), pm.width, pm.height)
+                            }
                             val box = tr.next()
                             val (bx, by, bw, bh) = box
-                            planes.load(image)
                             val kx = uw.toDouble() / gw
                             val ky = uh.toDouble() / gh
                             val guide = yuvRegionToRgb(
@@ -838,6 +897,9 @@ internal class CutoutChannel(
             extractor.release()
             try {
                 segmenter?.close()
+            } catch (_: Throwable) {}
+            try {
+                probe?.close()
             } catch (_: Throwable) {}
         }
     }

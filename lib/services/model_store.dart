@@ -206,6 +206,16 @@ class ModelStore {
       tmp.deleteSync();
       have = 0;
     }
+    if (have == f.bytes) {
+      // 上一趟收滿了、還沒搬（剛好那時候取消或 App 被關）：本機驗一次就好，
+      // 不然再要 Range: bytes=全長- 伺服器只會回 416
+      if (await _hashFile(tmp) == f.sha256) {
+        progress(have);
+        return;
+      }
+      tmp.deleteSync();
+      have = 0;
+    }
     final c = client();
     _active = c;
     try {
@@ -213,6 +223,14 @@ class ModelStore {
       if (have > 0) req.headers['Range'] = 'bytes=$have-';
       final res = await c.send(req);
       if (_cancelled) throw const ModelCancelled();
+      if (res.statusCode == 416) {
+        // 範圍不對（手上那段跟伺服器的檔對不上）：丟掉，下次從頭
+        unawaited(res.stream.drain<void>().catchError((_) {}));
+        try {
+          tmp.deleteSync();
+        } catch (_) {}
+        throw HttpException('下載 ${f.asset} 要重來（HTTP 416）');
+      }
       if (res.statusCode == 200) {
         have = 0; // 伺服器不給續傳：從頭來
       } else if (res.statusCode != 206) {
@@ -236,8 +254,17 @@ class ModelStore {
           hasher.add(chunk);
           progress(got);
         });
-      } finally {
+      } on HttpException {
         out.closeSync();
+        // 比預期大＝不是這個檔：不留
+        try {
+          tmp.deleteSync();
+        } catch (_) {}
+        rethrow;
+      } finally {
+        try {
+          out.closeSync();
+        } catch (_) {}
       }
       if (_cancelled) throw const ModelCancelled();
       hasher.close();
@@ -254,6 +281,16 @@ class ModelStore {
     } finally {
       c.close();
     }
+  }
+
+  static Future<String> _hashFile(File f) async {
+    final digest = _DigestSink();
+    final hasher = crypto.sha256.startChunkedConversion(digest);
+    await for (final chunk in f.openRead()) {
+      hasher.add(chunk);
+    }
+    hasher.close();
+    return digest.value.toString();
   }
 
   /// 一段一段收；[_stallTimeout] 沒有新資料算斷線；取消馬上停

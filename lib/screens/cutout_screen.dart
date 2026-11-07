@@ -104,6 +104,11 @@ class _CutoutScreenState extends State<CutoutScreen> {
     super.initState();
     _blocked = Diag.fusePaused.containsKey(CutoutDetect.fuseKey);
     unawaited(_load());
+    unawaited(
+      CutoutDetect.refineSupported().then((ok) {
+        if (mounted && ok != _refineOk) setState(() => _refineOk = ok);
+      }),
+    );
   }
 
   @override
@@ -267,7 +272,9 @@ class _CutoutScreenState extends State<CutoutScreen> {
     _push();
     final ids = Set.of(_st.ids);
     if (!ids.remove(id)) ids.add(id);
-    setState(() => _st = _with(ids: ids));
+    // 精修是照「當時選的主體」融合的：主體一換就收掉（要的話再按一次精修；
+    // 上一步可以回到精修過的那一版）
+    setState(() => _st = _with(ids: ids, refined: false));
     unawaited(_refreshMask());
   }
 
@@ -299,6 +306,9 @@ class _CutoutScreenState extends State<CutoutScreen> {
   /// 下載好的精修模型路徑（給原生端）；沒下載回 null
   String? _refineModel;
   bool _refining = false;
+
+  /// 這台能不能精修（還沒問到＝先不顯示按鈕）
+  bool _refineOk = false;
 
   Future<String?> _refineModelPath() async =>
       _refineModel ??= await ModelStore.instance.readyPath(_refinePack);
@@ -949,7 +959,7 @@ class _CutoutScreenState extends State<CutoutScreen> {
               ),
             ),
           ),
-        SizedBox(width: 84, child: Center(child: refine)),
+        if (_refineOk) SizedBox(width: 84, child: Center(child: refine)),
         SizedBox(width: 84, child: Center(child: retry)),
       ],
     );

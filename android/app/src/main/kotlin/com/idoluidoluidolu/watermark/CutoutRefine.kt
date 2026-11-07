@@ -387,6 +387,36 @@ internal class CropTracker(private val gw: Int, private val gh: Int) {
     private var side = 0.0
     private var has = false
 
+    /// 現在是不是只裁一塊（不是整張）：裁切的時候框外看不到，要另外整張
+    /// 看一眼（[probe]），不然之後從框外走進來的人整段都不會被分割
+    val cropping: Boolean
+        get() {
+            if (!has) return false
+            val c = next()
+            return c[2] < gw || c[3] < gh
+        }
+
+    /// 整張看一眼的結果（[probe] 是 [pw]×[ph]、對應整張導引圖）：框外
+    /// 有人（≥0.5）就下一格整張重找
+    fun probe(probe: FloatArray, pw: Int, ph: Int) {
+        if (!cropping) return
+        val (cx0, cy0, cw, ch) = next()
+        val kx = gw.toDouble() / pw
+        val ky = gh.toDouble() / ph
+        // 框往外放一點（人在框邊緣的那一點點不算「框外」）
+        val m = max(gw, gh) * 0.03
+        var outside = 0
+        for (y in 0 until ph) {
+            val gy = (y + 0.5) * ky
+            for (x in 0 until pw) {
+                if (probe[y * pw + x] < 0.5f) continue
+                val gx = (x + 0.5) * kx
+                if (gx < cx0 - m || gx > cx0 + cw + m || gy < cy0 - m || gy > cy0 + ch + m) outside++
+            }
+        }
+        if (outside >= max(4, pw * ph / 1000)) has = false
+    }
+
     /// 這一格要裁哪：[x, y, w, h]
     fun next(): IntArray {
         if (!has) return intArrayOf(0, 0, gw, gh)
@@ -420,8 +450,10 @@ internal class CropTracker(private val gw: Int, private val gh: Int) {
             has = false
             return
         }
-        val full = w == gw && h == gh
-        val touch = !full && (x0 <= 1 || y0 <= 1 || x1 >= w - 2 || y1 >= h - 2)
+        // 碰到裁切框的邊＝人快跑出去了；但那條邊剛好是畫面的邊（人本來就被
+        // 畫面切掉，例如半身入鏡）不算，不然會整張、裁切一格一格交替
+        val touch = (x0 <= 1 && ox > 0) || (y0 <= 1 && oy > 0) ||
+            (x1 >= w - 2 && ox + w < gw) || (y1 >= h - 2 && oy + h < gh)
         if (touch) {
             // 快跑出框：下一格整張重找
             has = false

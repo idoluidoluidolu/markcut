@@ -21,9 +21,10 @@ internal class CutoutMatting(model: ByteArray) : AutoCloseable {
 
     init {
         val threads = max(1, min(4, Runtime.getRuntime().availableProcessors()))
-        val opts = OrtSession.SessionOptions()
-        opts.setIntraOpNumThreads(threads)
-        session = env.createSession(model, opts)
+        session = OrtSession.SessionOptions().use { opts ->
+            opts.setIntraOpNumThreads(threads)
+            env.createSession(model, opts)
+        }
     }
 
     /// [rgb]＝RGB 交錯（[w]×[h]）→ 0~1 的 alpha（同大小）。模型輸入：短邊

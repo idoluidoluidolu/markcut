@@ -9181,21 +9181,25 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 播放器回報的位置：video_player（Android 的 ExoPlayer）每 0.1 秒才更新
   /// 一次，去背遮罩照它換格會一跳一跳、動作快時邊緣慢 2~3 格。這裡記下
-  /// 「上次回報的值跟那時候的時鐘」，用「回報值＋經過時間×速度」推算這一刻
-  /// （最多往前推 0.3 秒）。mpv 那條連續更新，推出來就是原值
-  final _posSeen = Expando<(double, int)>();
+  /// 「上次回報的值、那時候的時鐘、有沒有看過它往前走」，播放器真的在走
+  /// （在播、沒在緩衝、回報值有往前）才用「回報值＋經過時間×速度」推算這一刻，
+  /// 最多推一個回報間隔多一點（0.15 秒）——剛按播放還沒起步、卡住緩衝時
+  /// 不會超前。mpv 那條連續更新，推出來就是原值
+  final _posSeen = Expando<(double, int, bool)>();
   final _posClock = Stopwatch()..start();
 
   double _playerNow(PlayerX ctrl, double rate) {
-    final p = ctrl.value.position.inMicroseconds / 1e6;
+    final v = ctrl.value;
+    final p = v.position.inMicroseconds / 1e6;
     final now = _posClock.elapsedMicroseconds;
     final seen = _posSeen[ctrl];
     if (seen == null || seen.$1 != p) {
-      _posSeen[ctrl] = (p, now);
+      _posSeen[ctrl] = (p, now, seen != null && p > seen.$1);
       return p;
     }
+    if (!seen.$3 || !v.isPlaying || v.isBuffering) return p;
     final dt = (now - seen.$2) / 1e6;
-    return p + math.min(0.3, dt) * rate;
+    return p + math.min(0.15, dt) * rate;
   }
 
   /// 預覽上 Flutter 畫的影片層套去背（Android 的播放器圖層、拖曳快取幀、

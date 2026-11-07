@@ -3054,6 +3054,52 @@ extension RunnerTests {
     }
   }
 
+  /// 小小的人站在畫面下緣（腳被畫面切掉）：不能「碰邊→整張→裁切」一格一格交替
+  func testCropTrackerDoesNotFlipWhenPersonIsCutByFrameEdge() {
+    let gw = 540
+    let gh = 960
+    let t = MCCropTracker(gw: gw, gh: gh)
+    func person(_ box: [Int]) -> [Float] {
+      let (ox, oy, w, h) = (box[0], box[1], box[2], box[3])
+      var a = [Float](repeating: 0, count: w * h)
+      for y in 780..<960 {
+        for x in 230..<310 {
+          let cx = x - ox
+          let cy = y - oy
+          if cx >= 0 && cx < w && cy >= 0 && cy < h { a[cy * w + cx] = 1 }
+        }
+      }
+      return a
+    }
+    var seq: [Bool] = []
+    for _ in 0..<6 {
+      let box = t.next()
+      seq.append(box[2] == gw && box[3] == gh)
+      t.update(person(box), box)
+    }
+    XCTAssertEqual(seq, [true, false, false, false, false, false], "\(seq)")
+  }
+
+  /// 裁切時整張看一眼：框外有人就下一格整張重找
+  func testCropTrackerProbeFindsSomeoneOutside() {
+    let gw = 540
+    let gh = 960
+    let t = MCCropTracker(gw: gw, gh: gh)
+    var full = [Float](repeating: 0, count: gw * gh)
+    for y in 600..<800 { for x in 350..<450 { full[y * gw + x] = 1 } }
+    t.update(full, [0, 0, gw, gh])
+    XCTAssertTrue(t.cropping)
+    let pw = 54
+    let ph = 96
+    var p = [Float](repeating: 0, count: pw * ph)
+    for y in 60..<80 { for x in 35..<45 { p[y * pw + x] = 1 } }
+    t.probe(p, pw, ph)
+    XCTAssertTrue(t.cropping)
+    for y in 5..<25 { for x in 3..<10 { p[y * pw + x] = 1 } }
+    t.probe(p, pw, ph)
+    XCTAssertEqual(t.next(), [0, 0, gw, gh])
+  }
+
   /// 精修的融合（同 Android CutoutMattingTest）：核心的洞補回來、髮絲照 matte、遠處不要
   func testCutoutFuseKeepsCoreDropsFar() {
     let w = 40
