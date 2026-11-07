@@ -188,6 +188,35 @@ internal class CutoutChannel(
         return Pair(maxOf(1, Math.round(w * k).toInt()), maxOf(1, Math.round(h * k).toInt()))
     }
 
+    /// 分析那張照片的 RGB（修邊的導引圖；跟快取的遮罩同一張、同一個大小）
+    private var cacheGuide: ByteArray? = null
+
+    /// 照片轉成 RGB 交錯位元組（修邊用）
+    private fun rgbOf(bmp: Bitmap): ByteArray {
+        val w = bmp.width
+        val h = bmp.height
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, 0, 0, w, h)
+        val out = ByteArray(w * h * 3)
+        for (i in 0 until w * h) {
+            val c = px[i]
+            out[i * 3] = (c shr 16).toByte()
+            out[i * 3 + 1] = (c shr 8).toByte()
+            out[i * 3 + 2] = c.toByte()
+        }
+        return out
+    }
+
+    /// 整張遮罩拿照片修邊（同影片那套：只修模糊的那一圈）。主體分割的遮罩
+    /// 本來就細、人像分割的退路只有 256×256，兩種都貼齊照片裡真正的輪廓
+    private fun refineFull(mask: ByteArray, w: Int, h: Int): ByteArray {
+        val guide = cacheGuide ?: return mask
+        if (guide.size != w * h * 3) return mask
+        val f = FloatArray(w * h) { (mask[it].toInt() and 0xFF) / 255f }
+        val r = CutoutRefine.bandRefine(guide, f, w, h, r = 3)
+        return ByteArray(w * h) { (r[it] * 255f + 0.5f).toInt().coerceIn(0, 255).toByte() }
+    }
+
     private fun analyzePhoto(path: String, maxSide: Int, previewSide: Int): Map<String, Any?>? {
         val bmp = decodeUpright(path, maxSide) ?: return null
         val w = bmp.width
@@ -196,6 +225,7 @@ internal class CutoutChannel(
         cachePath = null
         cacheSubjects = emptyList()
         cachePerson = null
+        cacheGuide = rgbOf(bmp)
         var note: String? = null
         try {
             val subjects = subjectSegment(bmp)
@@ -206,7 +236,7 @@ internal class CutoutChannel(
             cacheW = w
             cacheH = h
             cacheSubjects = subjects
-            val all = composeSubjects(subjects, subjects.map { it.id }, w, h)
+            val all = refineFull(composeSubjects(subjects, subjects.map { it.id }, w, h), w, h)
             // 點畫面切換主體用的標籤圖：不用全尺寸，長邊 512 就夠點
             val (lw, lh) = fit(w, h, 512)
             val labels = ByteArray(lw * lh)
@@ -246,7 +276,7 @@ internal class CutoutChannel(
             val cause = e.cause ?: e
             note = "${cause.javaClass.simpleName}: ${cause.message ?: ""}"
         }
-        val person = selfieSegment(bmp)
+        val person = refineFull(selfieSegment(bmp), w, h)
         cachePath = path
         cacheW = w
         cacheH = h
@@ -280,7 +310,8 @@ internal class CutoutChannel(
         val person = cachePerson
         val full = when {
             person != null -> if (ids.isEmpty()) ByteArray(w * h) else person
-            else -> composeSubjects(cacheSubjects, ids, w, h)
+            ids.isEmpty() -> ByteArray(w * h)
+            else -> refineFull(composeSubjects(cacheSubjects, ids, w, h), w, h)
         }
         return mapOf("w" to ow, "h" to oh, "mask" to resize(full, w, h, ow, oh))
     }
