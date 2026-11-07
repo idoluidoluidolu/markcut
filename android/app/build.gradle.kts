@@ -115,4 +115,8 @@ dependencies {
     // 影片與「沒有 Play 服務」的退路用內建的人像分割
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
+    // 去背的髮絲（MODNet 人像 matting，模型在 assets/models，Apache-2.0）：
+    // ONNX Runtime（MIT）。單元測試用桌機版跑同一個模型
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.1")
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.31.1")
 }

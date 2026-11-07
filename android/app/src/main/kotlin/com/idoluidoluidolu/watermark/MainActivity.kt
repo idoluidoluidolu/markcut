@@ -303,7 +303,9 @@ class MainActivity : FlutterActivity() {
         registerFaceChannel(flutterEngine)
         // 去背（markcut/cutout）：影片遮罩跟工作檔轉檔一樣，使用者在滑動、
         // 播放時放慢讓路
-        cutout = CutoutChannel(mainHandler) { previewWorkGate.interactive }.also {
+        cutout = CutoutChannel(mainHandler, applicationContext.assets) {
+            previewWorkGate.interactive
+        }.also {
             it.register(flutterEngine)
         }
         // cacheDir/picked 每挑一次就多一份複本（同名不覆蓋、從沒人清）：

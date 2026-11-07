@@ -84,6 +84,7 @@ void main() {
       '完整授權條款見 https://openfontlicense.org',
     );
     yield await kosugiMaruLicense();
+    yield await cutoutModelLicense();
     yield const LicenseEntryWithLineBreaks(
       ['FFmpeg'],
       '本程式使用 FFmpeg（LGPL v2.1 或後續版本授權）進行影音處理，'
@@ -112,6 +113,20 @@ Future<LicenseEntry> kosugiMaruLicense() async {
     const ['字型'],
     'jf open 粉圓的漢字部分源自 Kosugi Maru'
     '（Copyright (c) 2010 MOTOYA CO.,LTD.），依 Apache License 2.0 授權：\n'
+    '${terms.replaceAll('\r\n', '\n')}',
+  );
+}
+
+/// 去背用的模型與推論程式庫：MODNet（Apache License 2.0，模型檔包在
+/// Android 的 App 裡，第 4 條要附條款全文）、ONNX Runtime（MIT）
+Future<LicenseEntry> cutoutModelLicense() async {
+  final terms = await rootBundle.loadString('assets/licenses/Apache-2.0.txt');
+  return LicenseEntryWithLineBreaks(
+    const ['去背模型'],
+    'MODNet 人像 matting（Copyright (c) 2020 Zhanghan Ke, ZHKKKe/MODNet），'
+    '依 Apache License 2.0 授權；Android 版附的是 Xenova/modnet 轉出的 ONNX 檔'
+    '（fp16 權重，未改動網路）。\n'
+    'ONNX Runtime（Copyright (c) Microsoft Corporation），依 MIT License 授權。\n\n'
     '${terms.replaceAll('\r\n', '\n')}',
   );
 }

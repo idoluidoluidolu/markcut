@@ -48,9 +48,29 @@ import java.util.zip.Deflater
 /// cancel({token})
 internal class CutoutChannel(
     private val main: Handler,
+    /// 讀包在 App 裡的模型（assets/models）
+    private val assets: android.content.res.AssetManager?,
     /// 使用者正在滑動、播放（影片遮罩放慢讓路）
     private val interactive: () -> Boolean,
 ) {
+    /// MODNet（髮絲）：第一次算影片遮罩時才載入，之後重複用。載不起來（記憶體
+    /// 不夠、原生程式庫壞）就記著不再試，照只有 ML Kit 的路走
+    private var matting: CutoutMatting? = null
+    private var mattingFailed = false
+
+    private fun mattingOrNull(): CutoutMatting? {
+        matting?.let { return it }
+        if (mattingFailed) return null
+        return try {
+            val bytes = assets?.open("models/modnet_fp16.onnx")?.use { it.readBytes() }
+                ?: return null
+            CutoutMatting(bytes).also { matting = it }
+        } catch (e: Throwable) {
+            mattingFailed = true
+            android.util.Log.w("Cutout", "MODNet 載不起來：$e")
+            null
+        }
+    }
     private lateinit var channel: MethodChannel
     private val photoExec = Executors.newSingleThreadExecutor()
     private val videoExec = Executors.newSingleThreadExecutor()
@@ -176,6 +196,15 @@ internal class CutoutChannel(
     fun dispose() {
         for (f in cancelled.values) f.set(true)
         photoExec.shutdown()
+        // 影片工作緒收完才放掉 MODNet（正在算的那一格還在用）
+        try {
+            videoExec.execute {
+                try {
+                    matting?.close()
+                } catch (_: Throwable) {}
+                matting = null
+            }
+        } catch (_: RejectedExecutionException) {}
         videoExec.shutdown()
     }
 
@@ -479,6 +508,29 @@ internal class CutoutChannel(
             var tracker: CropTracker? = null
             var guideFull = FloatArray(0)
             val planes = PlaneCopy()
+            val ws = CutoutRefine.Workspace()
+            // MODNet（髮絲）：跟 ML Kit 的粗遮罩一致（IoU ≥0.88 連兩格）才開、
+            // 掉到 0.8 以下連兩格就關；沒開的時候每 8 格試一次。前 12 次量出來
+            // 整支會超過預算（片長 3.5 倍、至少 60 秒）就整支不用
+            val mt = mattingOrNull()
+            var mtOn = false
+            var mtGood = 0
+            var mtBad = 0
+            var mtOff = mt == null
+            var mtRuns = 0
+            var mtNs = 0L
+            var frameNo = 0
+            val fpsGuess = if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                try {
+                    format.getInteger(MediaFormat.KEY_FRAME_RATE).toDouble()
+                } catch (_: Exception) {
+                    30.0
+                }
+            } else {
+                30.0
+            }
+            val totalFrames = maxOf(1.0, durationUs / 1e6 * minOf(30.0, fpsGuess))
+            val mtBudgetNs = maxOf(60.0, durationUs / 1e6 * 3.5) * 1e9
             // 防閃要看下一格：這一格先留著，下一格算出來才寫
             var prevRaw: ByteArray? = null
             var pendRaw: ByteArray? = null
@@ -571,8 +623,43 @@ internal class CutoutChannel(
                             val coarse = CutoutRefine.upscaleBilinear(
                                 maskFloats(mask), mask.width, mask.height, bw, bh,
                             )
+                            var fused: FloatArray? = null
+                            if (!mtOff && mt != null && (mtOn || mtGood > 0 || frameNo % 8 == 0)) {
+                                step[0] = "髮絲"
+                                val t0 = System.nanoTime()
+                                val m = mt.matte(guide, bw, bh)
+                                mtNs += System.nanoTime() - t0
+                                mtRuns++
+                                val score = CutoutMatting.iou(coarse, m)
+                                if (score >= 0.88) {
+                                    mtGood++
+                                    mtBad = 0
+                                    if (mtGood >= 2) mtOn = true
+                                } else if (score < 0.8) {
+                                    mtBad++
+                                    mtGood = 0
+                                    if (mtBad >= 2) mtOn = false
+                                }
+                                if (mtOn && score >= 0.8) {
+                                    fused = CutoutMatting.fuse(
+                                        coarse, m, bw, bh,
+                                        core = 2,
+                                        reach = maxOf(4, (maxOf(bw, bh) * 0.06).toInt()),
+                                    )
+                                }
+                                if (mtRuns == 12 && mtNs / 12.0 * totalFrames > mtBudgetNs) {
+                                    mtOff = true
+                                    mtOn = false
+                                    android.util.Log.i(
+                                        "Cutout",
+                                        "MODNet 太慢（%.0f ms／格），這支不用".format(mtNs / 12.0 / 1e6),
+                                    )
+                                }
+                            }
+                            frameNo++
                             step[0] = "修邊"
-                            val refined = CutoutRefine.bandRefine(guide, coarse, bw, bh)
+                            val refined = fused
+                                ?: CutoutRefine.bandRefine(guide, coarse, bw, bh, ws = ws)
                             tr.update(refined, box)
                             java.util.Arrays.fill(guideFull, 0f)
                             for (y in 0 until bh) {
