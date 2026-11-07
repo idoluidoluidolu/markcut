@@ -404,6 +404,107 @@ String _window(double start, double end) =>
 /// 片段調色 → FFmpeg 濾鏡（沒調過回空字串）
 String _eq(TimelineClip c) => c.color.ffmpeg;
 
+/// 去背的去色（Forte & Pitié 2021 的 blur-fusion 前景估計，兩段）：
+/// [frame]＝yuva420p 畫面標籤、[mask]＝同大小的 gray 遮罩標籤（這裡用掉）
+/// → [out]＝邊緣顏色修好的 yuva420p。[long]＝畫面長邊（模糊強度照它算）。
+///
+/// 每一段：F̂＝blur(F·α)/blur(α)、B̂＝blur(B·(1−α))/blur(1−α)——遮罩放進
+/// alpha 平面、就地 premultiply→四個平面一起模糊（alpha 平面模糊完就是
+/// blur(α)）→就地 unpremultiply（FFmpeg 8.1 的雙輸入 premultiply 對彩色格式
+/// 沒作用，實測）；再 F＝F̂＋α(I−αF̂−(1−α)B̂)＝lerp(F̂, I, α)＋α(1−α)(F̂−B̂)，
+/// 差值先除 2 存（不溢位）再乘 2α(1−α)。第一段 F=B=I、模糊大
+/// （[kCutoutDecontSigma1]），第二段拿第一段的 F、B̂、模糊小。
+///
+/// 顏色估計本來就是模糊量：整套在 1/4 解析度算（全解析度慢 9 倍，實測
+/// 跟全解析度只差 1.3 階、不去色差 13.7），放大回來只用在邊帶——人裡面
+/// （α=1）跟外面（α=0）照原畫面、一個位元都不動
+@visibleForTesting
+String cutoutDecontFilter(
+  int k, {
+  required String frame,
+  required String mask,
+  required String out,
+  required int w,
+  required int h,
+}) {
+  final qw = math.max(1, w ~/ 4);
+  final qh = math.max(1, h ~/ 4);
+  final long = math.max(qw, qh).toDouble();
+  final s1 = _f(long * kCutoutDecontSigma1);
+  final s2 = _f(long * kCutoutDecontSigma2);
+  String l(String n) => 'dc${n}_$k';
+  String lut2(String e) => "lut2=c0='$e':c1='$e':c2='$e'";
+  const half = '128+(x-y)/2';
+  const mul = '128+(x-128)*2*y*(255-y)/65025';
+  String est(String inp, String a, String sigma, String tail) =>
+      '[$inp][$a]alphamerge,premultiply=inplace=1,gblur=sigma=$sigma,'
+      'unpremultiply=inplace=1,format=gbrp,$tail;';
+  final b = StringBuffer()
+    ..write('[$mask]split=2[${l('ms')}][${l('mq')}];')
+    ..write(
+      '[${l('mq')}]scale=$qw:$qh:flags=area,'
+      'split=8[${l('m1f')}][${l('m1b')}][${l('m1m')}][${l('m1x')}]'
+      '[${l('m2f')}][${l('m2b')}][${l('m2m')}][${l('m2x')}];',
+    )
+    ..write('[$frame]split=2[${l('I')}][${l('J')}];')
+    ..write(
+      '[${l('J')}]scale=$qw:$qh:flags=area,format=gbrp,'
+      'split=4[${l('i1')}][${l('i2')}][${l('i3')}][${l('i4')}];',
+    );
+  // 一段：F̂、B̂ 兩個估計，再組出 F
+  void pass(
+    int p,
+    String fin,
+    String bin,
+    String iImg,
+    String sigma, {
+    required String fOut,
+    String? bOut,
+  }) {
+    b
+      ..write(
+        est(fin, l('m${p}f'), sigma, 'split=2[${l('f${p}a')}][${l('f${p}b')}]'),
+      )
+      ..write('[${l('m${p}b')}]negate[${l('m${p}n')}];')
+      ..write(
+        est(
+          bin,
+          l('m${p}n'),
+          sigma,
+          bOut == null
+              ? 'null[${l('b${p}a')}]'
+              : 'split=2[${l('b${p}a')}][$bOut]',
+        ),
+      )
+      ..write(
+        '[${l('m${p}m')}]format=gbrp[${l('g${p}m')}];'
+        '[${l('f${p}a')}][$iImg][${l('g${p}m')}]maskedmerge[${l('t$p')}];',
+      )
+      ..write('[${l('f${p}b')}][${l('b${p}a')}]${lut2(half)}[${l('e$p')}];')
+      ..write(
+        '[${l('m${p}x')}]format=gbrp[${l('g${p}x')}];'
+        '[${l('e$p')}][${l('g${p}x')}]${lut2(mul)}[${l('x$p')}];',
+      )
+      ..write('[${l('t$p')}][${l('x$p')}]blend=all_mode=grainmerge[$fOut];');
+  }
+
+  pass(1, l('i1'), l('i2'), l('i3'), s1, fOut: l('o1'), bOut: l('bh1'));
+  pass(2, l('o1'), l('bh1'), l('i4'), s2, fOut: l('o2'));
+  // 只有邊帶（0<α<255）換成去色結果；色度平面是半解析度，遮罩跟著縮
+  b
+    ..write('[${l('o2')}]scale=$w:$h:flags=bilinear,format=yuva420p[${l('F')}];')
+    ..write(
+      "[${l('ms')}]lut=c0='if(eq(val,255)+eq(val,0),255,0)',"
+      'split=4[${l('k0')}][${l('k1')}][${l('k2')}][${l('k3')}];'
+      '[${l('k1')}]scale=trunc((iw+1)/2):trunc((ih+1)/2):flags=area[${l('ku')}];'
+      '[${l('k2')}]scale=trunc((iw+1)/2):trunc((ih+1)/2):flags=area[${l('kv')}];'
+      '[${l('k0')}][${l('ku')}][${l('kv')}][${l('k3')}]'
+      'mergeplanes=0x00102030:yuva420p[${l('km')}];'
+      '[${l('F')}][${l('I')}][${l('km')}]maskedmerge[$out];',
+    );
+  return b.toString();
+}
+
 /// 組出通用圖層的 FFmpeg 指令：
 /// 黑色畫布 → 由下層往上把每個影片片段 overlay 上去（各自只在自己的時間區間顯示）
 /// → 疊浮水印；所有帶聲音的片段 delay 對位後 amix 混成一軌。
@@ -868,7 +969,8 @@ Future<List<String>> _buildCommand(
   }
 
   /// 去背的影片圖層：跟 [writeVideoLayer] 同一套時間與幾何，只是順序改成
-  /// 「先把畫面移到片段自己的時間，再跟遮罩串流 alphamerge」——遮罩串流
+  /// 「先把畫面移到片段自己的時間，再跟遮罩串流 alphamerge」（中間先去色，
+  /// 見 [cutoutDecontFilter]）——遮罩串流
   /// 是照輸出的每一格產的（片段時間），兩路時間對齊了才能逐格配對。
   /// 挖好之後墊背景（純色／原畫面模糊，都在這一層自己的框裡），再接裁切、
   /// 鏡像、旋轉、透明度、淡入淡出，跟預覽、原生合成器同一個順序
@@ -906,16 +1008,29 @@ Future<List<String>> _buildCommand(
     // 遮罩：原始檔的時間從 0 起，移到跟畫面同一個片段時間
     fc.write(
       '[$mi:v]setpts=PTS-STARTPTS+$shift/TB,'
-      'scale=$rw:$rh:flags=bilinear,format=gray[cm$k];',
+      'scale=$rw:$rh:flags=bilinear,format=gray,'
+      'split=2[cmD$k][cm$k];',
+    );
+    final blurBg = cut.bg == CutoutBg.blur;
+    if (blurBg) fc.write('[cv$k]split=2[cvS$k][cvb$k];');
+    fc.write(
+      cutoutDecontFilter(
+        k,
+        frame: blurBg ? 'cvS$k' : 'cv$k',
+        mask: 'cmD$k',
+        out: 'cvd$k',
+        w: rw,
+        h: rh,
+      ),
     );
     var fg = 'ca$k';
     switch (cut.bg) {
       case CutoutBg.none:
-        fc.write('[cv$k][cm$k]alphamerge[ca$k];');
+        fc.write('[cvd$k][cm$k]alphamerge[ca$k];');
       case CutoutBg.color:
         final rgb = (cut.color & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
         fc.write(
-          '[cv$k][cm$k]alphamerge,split[cf$k][cg$k];'
+          '[cvd$k][cm$k]alphamerge,split[cf$k][cg$k];'
           '[cg$k]drawbox=x=0:y=0:w=iw:h=ih:color=0x$rgb@1.0:t=fill:'
           'replace=1[cb$k];'
           '[cb$k][cf$k]overlay=format=auto[cc$k];',
@@ -925,9 +1040,8 @@ Future<List<String>> _buildCommand(
         // 長邊的 2%（同預覽、原生合成器）
         final sigma = math.max(rw, rh) * 0.02;
         fc.write(
-          '[cv$k]split[cva$k][cvb$k];'
           '[cvb$k]gblur=sigma=${_f(sigma)}[cbl$k];'
-          '[cva$k][cm$k]alphamerge[cfg$k];'
+          '[cvd$k][cm$k]alphamerge[cfg$k];'
           '[cbl$k][cfg$k]overlay=format=auto[cc$k];',
         );
         fg = 'cc$k';

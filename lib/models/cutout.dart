@@ -5,6 +5,14 @@ import 'timeline.dart';
 /// 用 index 序列化：新種類一定要加在最尾端
 enum CutoutBg { none, color, blur }
 
+/// 去色（邊緣半透明那一圈的顏色混著舊背景，換背景就是一圈光暈；拿附近
+/// 確定是人／背景的顏色把它解開——Forte & Pitié 2021 的 blur-fusion，兩段）
+/// 用的模糊強度：畫面長邊的比例。第一段大、第二段小。每條路都用這兩個值——
+/// FFmpeg（video_engine_io 的 cutoutDecontFilter）、iOS 合成器（AppDelegate
+/// 的 MCCutoutDecont）、照片（cutout_photo）
+const kCutoutDecontSigma1 = 0.04;
+const kCutoutDecontSigma2 = 0.005;
+
 /// 一個影片片段的去背設定。
 ///
 /// 遮罩是「素材」的（[MediaSource.cutMask]，同一支影片切成幾段都共用

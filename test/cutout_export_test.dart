@@ -476,4 +476,120 @@ void main() {
     skip: ffmpeg == null ? '設 MARKCUT_FFMPEG 才跑真 FFmpeg' : false,
     timeout: const Timeout(Duration(minutes: 3)),
   );
+
+  test(
+    '真 FFmpeg：去色——邊緣半透明那一圈不帶舊背景的顏色，人裡面一個位元都不動',
+    () async {
+      Future<void> run(List<String> args) async {
+        final r = await Process.run(ffmpeg!, [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          ...args,
+        ]);
+        expect(r.exitCode, 0, reason: r.stderr.toString());
+      }
+
+      // 左半紅色的「人」、右半白色的舊背景；遮罩跟原片一樣大（320×180，
+      // 匯出串流不縮），在交界右邊 8 像素內從 1 漸到 0——那一段原片是白的，
+      // 照舊合成會在新背景上留一圈白邊
+      final src = '${dir.path}/rw.nut';
+      await run([
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=white:s=320x180:r=30:d=1,'
+            'drawbox=x=0:y=0:w=160:h=180:color=0xC82828@1:t=fill',
+        '-c:v',
+        'ffv1',
+        src,
+      ]);
+      final m = '${dir.path}/soft.mcmk';
+      final w = CutoutMaskWriter(m, 320, 180);
+      final alpha = List<int>.generate(320, (x) {
+        if (x < 160) return 255;
+        if (x >= 168) return 0;
+        return (255 * (1 - (x - 159) / 9)).round();
+      });
+      for (var i = 0; i < 30; i++) {
+        final f = Uint8List(320 * 180);
+        for (var y = 0; y < 180; y++) {
+          for (var x = 0; x < 320; x++) {
+            f[y * 320 + x] = alpha[x];
+          }
+        }
+        w.add(i / 30, f);
+      }
+      w.close();
+      const blue = [0x28, 0x78, 0xE6];
+      final out = '${dir.path}/decont.nut';
+      final args = await debugBuildArguments(
+        _spec(
+          video: src,
+          mask: m,
+          cut: ClipCutout(bg: CutoutBg.color, color: 0xFF2878E6),
+          trimEnd: 1,
+          duration: 1,
+        ),
+        out,
+      );
+      final desk = <String>[];
+      for (var i = 0; i < args.length; i++) {
+        if (const {
+              '-b:v',
+              '-maxrate',
+              '-bufsize',
+              '-b:a',
+              '-movflags',
+            }.contains(args[i]) ||
+            args[i] == '-hwaccel') {
+          i++;
+          continue;
+        }
+        desk.add(switch (args[i]) {
+          'h264_mediacodec' || 'h264_videotoolbox' => 'ffv1',
+          'nv12' => 'yuv420p',
+          _ => args[i],
+        });
+      }
+      await run(desk);
+      final r = await Process.run(ffmpeg!, [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        out,
+        '-vf',
+        'select=eq(n\\,15)',
+        '-frames:v',
+        '1',
+        '-f',
+        'rawvideo',
+        '-pix_fmt',
+        'rgb24',
+        '-',
+      ], stdoutEncoding: null);
+      expect(r.exitCode, 0, reason: r.stderr.toString());
+      final got = Uint8List.fromList(r.stdout as List<int>);
+      // 人裡面（遠離交界）跟原片紅色一樣（YUV 來回最多差 1~2 階）
+      final mid = (90 * 320 + 40) * 3;
+      expect((got[mid] - 0xC8).abs(), lessThan(4));
+      expect((got[mid + 1] - 0x28).abs(), lessThan(4));
+      // 交界右邊、原片是白的那一段：照舊合成的綠色（白 255 跟藍背景按 α
+      // 混）vs 實際（去色後顏色往紅靠，綠色明顯比較低）
+      var worse = 0;
+      for (var x = 161; x <= 165; x++) {
+        final a = alpha[x] / 255;
+        final plainG = a * 255 + (1 - a) * blue[1];
+        final g = got[(90 * 320 + x) * 3 + 1];
+        // ignore: avoid_print
+        print('x=$x α=${a.toStringAsFixed(2)} 照舊綠≈${plainG.round()} 實際綠=$g');
+        if (g > plainG - 15) worse++;
+      }
+      expect(worse, 0, reason: '去色後交界那一圈不該還是白邊');
+    },
+    skip: ffmpeg == null ? '設 MARKCUT_FFMPEG 才跑真 FFmpeg' : false,
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 }

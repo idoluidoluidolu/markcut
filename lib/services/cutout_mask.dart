@@ -205,14 +205,15 @@ class CutoutMaskWriter {
 }
 
 /// 匯出（FFmpeg）用的遮罩串流：[times] 是每一格輸出畫面要的遮罩秒數，
-/// 依序取格、縮到長邊不超過 [maxSide]，攤成 gray 原始位元組寫進
+/// 依序取格、縮到長邊不超過 [maxSide]（預設 640＝原生端存檔的大小，等於
+/// 不縮：修好的邊緣原樣交給 FFmpeg），攤成 gray 原始位元組寫進
 /// [outPath]（FFmpeg 用 -f rawvideo -pix_fmt gray 讀）。
 /// 回 (寬, 高)；遮罩檔讀不到回 null。在背景 isolate 跑，匯出的進度條不卡
 Future<(int, int)?> writeCutoutRaw({
   required String maskPath,
   required String outPath,
   required List<double> times,
-  int maxSide = 320,
+  int maxSide = 640,
 }) => Isolate.run(
   () => writeCutoutRawSync(
     maskPath: maskPath,
@@ -227,7 +228,7 @@ Future<(int, int)?> writeCutoutRaw({
   required String maskPath,
   required String outPath,
   required List<double> times,
-  int maxSide = 320,
+  int maxSide = 640,
 }) {
   final m = CutoutMaskFile.openSync(maskPath);
   if (m == null) return null;
