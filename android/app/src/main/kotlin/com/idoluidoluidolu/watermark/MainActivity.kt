@@ -34,10 +34,6 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
-import com.google.android.gms.tasks.Tasks
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.face.FaceDetection
-import com.google.mlkit.vision.face.FaceDetectorOptions
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -45,7 +41,6 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONObject
@@ -242,7 +237,18 @@ private class VideoFaceStats {
     /// 送去找臉卻丟例外的
     var failed = 0
     var faces = 0
+    /// 臉是哪一招找到的（11-07 靈敏度：見 FaceScan.kt）：整張／補找／切塊
+    var full = 0
+    var follow = 0
+    var tile = 0
     var firstError: String? = null
+    /// 切塊、補找丟例外的次數與第一個例外（不影響整張的結果）
+    var extraFailed = 0
+    var extraError: String? = null
+    /// ML Kit 花的毫秒與次數、整支花的毫秒（精準模式比較慢：實機看值不值得）
+    var detectMs = 0L
+    var detectCalls = 0
+    var wallMs = 0L
     /// 解碼器名字、轉向、格子大小、色彩格式
     var detail = ""
 
@@ -250,9 +256,23 @@ private class VideoFaceStats {
         if (firstError == null) firstError = "${e.javaClass.simpleName}: ${e.message ?: ""}"
     }
 
-    fun summary(): String =
-        "解 ${frames} 格／找 ${sent} 格／臉 ${faces}／沒影像 ${noImage}／失敗 ${failed}｜${detail}" +
-            (firstError?.let { "｜${it}" } ?: "")
+    fun summary(): String {
+        val avg = if (detectCalls > 0) detectMs / detectCalls else 0L
+        return "解 ${frames} 格／找 ${sent} 格／臉 ${faces}（整張 ${full}・補找 ${follow}・切塊 ${tile}）" +
+            "／沒影像 ${noImage}／失敗 ${failed}" +
+            "｜ML Kit ${detectCalls} 次 平均 ${avg}ms／共 ${"%.1f".format(wallMs / 1000.0)} 秒" +
+            "｜${detail}" +
+            (firstError?.let { "｜${it}" } ?: "") +
+            (extraError?.let { "｜補找／切塊出事 ${extraFailed} 次：${it}" } ?: "")
+    }
+
+    /// 給 Dart 的數字（找到臉時提示的第二行）
+    fun counts(): Map<String, Any> = mapOf(
+        "full" to full,
+        "follow" to follow,
+        "tile" to tile,
+        "sec" to wallMs / 1000.0,
+    )
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -395,11 +415,13 @@ class MainActivity : FlutterActivity() {
     )
 
     /// 人臉偵測（markcut/face）：ML Kit，全部在手機上算，照片不離開手機。
-    /// detectImage({path}) -> [{x, y, w, h}]?：轉正後的座標（0~1、左上原點，
-    /// 跟 Dart 端解碼出來的照片同一個方向）。檔案讀不到回 null；沒有臉回空清單。
-    /// analyzeVideo({path, token, fps}) -> [{t, f: [[x, y, w, h]]}]?：影片每 1/fps
-    /// 秒取一格找臉（t＝素材時間秒、框同上、已照旋轉旗標轉正），過程中往 Dart
-    /// 送 videoProgress({token, p})；讀不到回 null，被取消回到那一刻為止的。
+    /// detectImage({path}) -> [{x, y, w, h, src}]?：轉正後的座標（0~1、左上原點，
+    /// 跟 Dart 端解碼出來的照片同一個方向；src＝哪一招找到的）。檔案讀不到回
+    /// null；沒有臉回空清單。
+    /// analyzeVideo({path, token, fps}) -> {samples: [{t, f: [[x, y, w, h]]}], info,
+    /// counts}?：影片每 1/fps 秒取一格找臉（t＝素材時間秒、框同上、已照旋轉旗標
+    /// 轉正；info＝流水帳、counts＝各招找到幾張），過程中往 Dart 送
+    /// videoProgress({token, p})；讀不到回 null，被取消回到那一刻為止的。
     /// cancelVideo({token})：叫正在跑的那一支停下來
     private fun registerFaceChannel(flutterEngine: FlutterEngine) {
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "markcut/face")
@@ -441,12 +463,16 @@ class MainActivity : FlutterActivity() {
                         faceCancelled.remove(token)
                         val why = failure
                         val info = stats.summary()
+                        val counts = stats.counts()
                         mainHandler.post {
                             if (why != null) {
                                 result.error("face_failed", why, info)
                             } else {
                                 // 帶著流水帳（Dart 找不到臉時放進提示；iOS 回的是清單）
-                                result.success(mapOf("samples" to samples, "info" to info))
+                                // 與各招找到幾張（找到臉時提示的第二行）
+                                result.success(
+                                    mapOf("samples" to samples, "info" to info, "counts" to counts),
+                                )
                             }
                         }
                     }
@@ -479,41 +505,34 @@ class MainActivity : FlutterActivity() {
                             reply { result.success(null) }
                             return@execute
                         }
-                        val w = bmp.width.toDouble()
-                        val h = bmp.height.toDouble()
                         step = "建立偵測器"
-                        val detector = FaceDetection.getClient(
-                            FaceDetectorOptions.Builder()
-                                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
-                                // 合照裡的小臉也要抓：預設 0.1＝頭寬至少要有畫面寬的一成
-                                .setMinFaceSize(0.03f)
-                                .build(),
-                        )
+                        // 精準模式、臉寬 3% 就找，再切 2×2 放大找合照裡的小臉
+                        //（11-07 靈敏度，見 FaceScan.kt）
+                        val scanner = FaceScanner()
                         try {
                             step = "偵測"
                             // 在工作緒上等結果（同影片那條），出事全在這個 try 裡
-                            val faces = Tasks.await(
-                                detector.process(InputImage.fromBitmap(bmp, 0)),
-                                30,
-                                TimeUnit.SECONDS,
-                            )
-                            val out = ArrayList<Map<String, Double>>()
-                            for (f in faces) {
-                                val b = f.boundingBox
+                            val found = scanner.scanBitmap(bmp)
+                            // src：哪一招找到的（0 整張、2 切塊），Dart 只拿來記流水帳
+                            val out = ArrayList<Map<String, Any>>()
+                            for (f in found) {
                                 out.add(
                                     mapOf(
-                                        "x" to b.left / w,
-                                        "y" to b.top / h,
-                                        "w" to b.width() / w,
-                                        "h" to b.height() / h,
+                                        "x" to f.x,
+                                        "y" to f.y,
+                                        "w" to f.w,
+                                        "h" to f.h,
+                                        "src" to f.src,
                                     ),
                                 )
                             }
+                            // 切塊出事（整張的照樣回）：帶一筆 note 給 Dart 記進流水帳
+                            scanner.firstExtraError?.let {
+                                out.add(mapOf("note" to "切塊出事 ${scanner.extraFailed} 次：$it"))
+                            }
                             reply { result.success(out) }
                         } finally {
-                            try {
-                                detector.close()
-                            } catch (_: Throwable) {}
+                            scanner.close()
                         }
                     } catch (e: Throwable) {
                         val msg = describeFailure(step, e)
@@ -537,8 +556,8 @@ class MainActivity : FlutterActivity() {
 
     /// 影片每 1/[fps] 秒取一格找臉。MediaCodec 順著硬體解碼（不 seek），
     /// 沒輪到的格子直接丟；輪到的拿 getOutputImage（YUV_420_888）自己轉成
-    /// NV21 交給 ML Kit（見 [yuvToNv21]），旋轉旗標一起給，回來的框就是畫面上
-    /// 看到的方向。過程記在 [stats]。
+    /// NV21（見 [yuvToNv21]）交給 [VideoFaceFollower]（整張／補找／切塊），旋轉
+    /// 旗標一起給，回來的框就是畫面上看到的方向。過程記在 [stats]。
     /// 回 [{t, f: [[x, y, w, h]]}]；讀不到回 null；被取消回到目前為止的；
     /// 一格影像都拿不到、或每一格都丟例外＝這條路走不通，丟例外（帶原因）
     private fun analyzeVideoFaces(
@@ -548,15 +567,21 @@ class MainActivity : FlutterActivity() {
         cancelled: () -> Boolean,
         progress: (Double) -> Unit,
     ): List<Map<String, Any>>? {
+        val started = SystemClock.elapsedRealtime()
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
-        val detector = FaceDetection.getClient(
-            FaceDetectorOptions.Builder()
-                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-                .setMinFaceSize(0.05f)
-                .build(),
-        )
+        // 11-07 使用者「偵測不靈敏」：以前整張丟快速模式、臉寬要 5% 才找。
+        // 現在精準模式＋補找（跟丟的臉在附近裁一塊放大）＋切塊（遠處小臉），
+        // 排程見 FaceScan.kt 的 VideoFaceFollower。在 try 裡才建：建偵測器出事
+        // 時 extractor 也要收（同 54dcc67 去背那條）
+        var scanner: FaceScanner? = null
+        var follower: VideoFaceFollower? = null
         try {
+            stats.step = "建立偵測器"
+            val sc = FaceScanner()
+            scanner = sc
+            val fol = VideoFaceFollower(sc)
+            follower = fol
             stats.step = "開檔"
             extractor.setDataSource(path)
             var track = -1
@@ -659,19 +684,15 @@ class MainActivity : FlutterActivity() {
                             stats.step = "轉格式"
                             val (nv21, w, h) = yuvToNv21(image)
                             stats.step = "找臉"
-                            val found = Tasks.await(
-                                detector.process(
-                                    InputImage.fromByteArray(nv21, w, h, rotation, InputImage.IMAGE_FORMAT_NV21),
-                                ),
-                                10,
-                                TimeUnit.SECONDS,
-                            )
-                            // ML Kit 的框在「轉正後」的座標：90°／270° 寬高要對調
-                            val upW = (if (rotation % 180 == 0) w else h).toDouble()
-                            val upH = (if (rotation % 180 == 0) h else w).toDouble()
+                            // 框已經是轉正後的 0~1（90°／270° 寬高對調在裡面做）
+                            val found = fol.scan(nv21, w, h, rotation, t)
                             for (f in found) {
-                                val b = f.boundingBox
-                                faces.add(listOf(b.left / upW, b.top / upH, b.width() / upW, b.height() / upH))
+                                faces.add(listOf(f.x, f.y, f.w, f.h))
+                                when (f.src) {
+                                    FaceHit.FOLLOW -> stats.follow++
+                                    FaceHit.TILE -> stats.tile++
+                                    else -> stats.full++
+                                }
                             }
                             stats.faces += found.size
                         } catch (e: Throwable) {
@@ -703,6 +724,12 @@ class MainActivity : FlutterActivity() {
             }
             return samples
         } finally {
+            // 流水帳：不管怎麼收尾（叫停、整支失敗）都記下花了多久、哪一招出過事
+            stats.detectMs = scanner?.detectMs ?: 0L
+            stats.detectCalls = scanner?.detectCalls ?: 0
+            stats.extraFailed = follower?.extraFailed ?: 0
+            stats.extraError = follower?.firstExtraError
+            stats.wallMs = SystemClock.elapsedRealtime() - started
             try {
                 codec?.stop()
             } catch (_: Exception) {}
@@ -710,7 +737,7 @@ class MainActivity : FlutterActivity() {
                 codec?.release()
             } catch (_: Exception) {}
             extractor.release()
-            detector.close()
+            scanner?.close()
         }
     }
 

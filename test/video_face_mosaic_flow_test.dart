@@ -66,12 +66,14 @@ void main() {
         analyzed.add((call.arguments as Map)['path'] as String);
         return _samples();
       }
-      // 圖片：兩張臉（轉正後的照片 0~1、左上原點）
+      // 圖片：兩張臉（轉正後的照片 0~1、左上原點）。Android 每張帶 src，
+      // 切塊出事時多一筆 note（不是臉，不能變成一塊馬賽克）
       if (call.method == 'detectImage') {
         detected.add((call.arguments as Map)['path'] as String);
         return [
-          {'x': 0.20, 'y': 0.20, 'w': 0.15, 'h': 0.20},
-          {'x': 0.60, 'y': 0.25, 'w': 0.12, 'h': 0.16},
+          {'x': 0.20, 'y': 0.20, 'w': 0.15, 'h': 0.20, 'src': 0},
+          {'x': 0.60, 'y': 0.25, 'w': 0.12, 'h': 0.16, 'src': 2},
+          {'note': '切塊出事 1 次：OutOfMemoryError: boom'},
         ];
       }
       return null;
@@ -436,6 +438,38 @@ void main() {
     await autoFace(t);
     expect(analyzed, ['/v.work.mp4']);
     expect(faceClips(t).length, 2, reason: '兩個人兩條');
+    await settle(t, 80);
+  });
+
+  // 11-07 調靈敏度：Android 多回各招找到幾張，找到臉時放進提示第二行
+  //（實機截一張圖就看得出補找、切塊有沒有幫上忙、慢了多少）
+  testWidgets('Android 找到臉：提示第二行帶整張／補找／切塊各幾張', (t) async {
+    answerVideo(
+      () => {
+        'samples': _samples(),
+        'info': '解 90 格／找 31 格／臉 62',
+        'counts': {'full': 40, 'follow': 19, 'tile': 3, 'sec': 12.34},
+      },
+    );
+    await openWithVideo(t);
+    await autoFace(t);
+    expect(faceClips(t).length, 2);
+    expect(find.textContaining('找到 2 個人'), findsOneWidget);
+    expect(
+      find.textContaining('整張 40・補找 19・切塊 3・12.3 秒'),
+      findsOneWidget,
+    );
+    // 帶數字的提示多留 4 秒：假時間推過去，計時器才收得乾淨
+    await t.pump(const Duration(seconds: 5));
+    await settle(t, 80);
+  });
+
+  testWidgets('iOS（沒有 counts）：找到臉的提示照舊只有一行', (t) async {
+    await openWithVideo(t);
+    await autoFace(t);
+    expect(faceClips(t).length, 2);
+    expect(find.textContaining('找到 2 個人'), findsOneWidget);
+    expect(find.textContaining('補找'), findsNothing);
     await settle(t, 80);
   });
 

@@ -8864,8 +8864,14 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       ch > 0 ? cw / ch : _canvasAspectNow,
     );
     // Android 帶著找臉的流水帳：一張都沒找到時放進提示（解了幾格、
-    // 找了幾格、有沒有失敗——分得出「真的沒臉」還是「這條路走不通」）
-    _addFacePlans(plans, video, note: FaceDetect.lastVideoInfoBrief);
+    // 找了幾格、有沒有失敗——分得出「真的沒臉」還是「這條路走不通」）；
+    // 找到了就帶各招找到幾張（調靈敏度用）
+    _addFacePlans(
+      plans,
+      video,
+      note: FaceDetect.lastVideoInfoBrief,
+      stats: FaceDetect.lastVideoCountsBrief,
+    );
   }
 
   /// 圖片的自動碼人臉：照片找臉一次，每張臉一條軌、整段不動的圓圈。
@@ -8906,11 +8912,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
 
   /// 找臉的結果加進時間軸：一個人一條軌，疊在最上面（馬賽克只糊它下面的
   /// 層）。[from]＝找的那段影片／那張圖（頭像從它抽）；[note]＝一張都沒
-  /// 找到時，提示的第二行
+  /// 找到時，提示的第二行；[stats]＝找到時，提示的第二行（Android 各招
+  /// 找到幾張：實機調靈敏度時截圖看）
   void _addFacePlans(
     List<FaceMosaicPlan> plans,
     TimelineClip from, {
     String? note,
+    String? stats,
   }) {
     if (plans.isEmpty) {
       showHint(
@@ -8965,7 +8973,11 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     });
     _saveDraft();
     _compRefreshIfChanged();
-    showHint(context, '找到 ${plans.length} 個人');
+    showHint(
+      context,
+      '找到 ${plans.length} 個人${stats == null ? '' : '\n$stats'}',
+      duration: stats == null ? null : const Duration(seconds: 4),
+    );
     unawaited(_loadFaceThumbs());
   }
 

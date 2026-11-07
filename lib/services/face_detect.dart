@@ -88,6 +88,7 @@ class FaceDetect {
     _listen();
     lastError = null;
     lastVideoInfo = null;
+    lastVideoCounts = null;
     final token = _nextToken++;
     job?._token = token;
     if (onProgress != null) _progress[token] = onProgress;
@@ -97,11 +98,18 @@ class FaceDetect {
         'token': token,
         'fps': fps,
       });
-      // Android 回 {samples, info}（帶流水帳），iOS 回清單
+      // Android 回 {samples, info, counts}（帶流水帳與各招找到幾張），iOS 回清單
       List<Object?>? r;
       if (raw is Map) {
         final info = raw['info'];
         if (info is String && info.isNotEmpty) lastVideoInfo = info;
+        final c = raw['counts'];
+        if (c is Map) {
+          lastVideoCounts = {
+            for (final e in c.entries)
+              if (e.key is String && e.value is num) e.key as String: e.value as num,
+          };
+        }
         final s = raw['samples'];
         if (s is List) r = s;
       } else if (raw is List) {
@@ -152,6 +160,21 @@ class FaceDetect {
   /// 失敗幾格、解碼器與格式）。iOS 沒有
   static String? lastVideoInfo;
 
+  /// 最近一次影片找臉，各招找到幾張、花了幾秒（Android：full 整張、follow
+  /// 補找、tile 切塊、sec）。iOS 沒有
+  static Map<String, num>? lastVideoCounts;
+
+  /// [lastVideoCounts] 排成提示的一行（11-07 調靈敏度：實機截一張圖就看得出
+  /// 補找、切塊有沒有幫上忙、慢了多少）
+  static String? get lastVideoCountsBrief {
+    final c = lastVideoCounts;
+    if (c == null) return null;
+    int n(String k) => (c[k] ?? 0).round();
+    final sec = c['sec'];
+    return '整張 ${n('full')}・補找 ${n('follow')}・切塊 ${n('tile')}'
+        '${sec == null ? '' : '・${sec.toStringAsFixed(1)} 秒'}';
+  }
+
   /// [lastError] 截到提示放得下的長度（提示的第二行：實機上出事時，
   /// 截圖就看得到是哪一步、哪個類別）
   static String? get lastErrorBrief => _brief(lastError);
@@ -176,10 +199,21 @@ class FaceDetect {
       });
       if (r == null) return null;
       final out = <FaceBox>[];
+      // Android 每張帶 src（0 整張、2 切塊）：切塊多找到的記進流水帳；
+      // 切塊出事時多一筆 {note}（整張的照樣在），也記進流水帳
+      var tiled = 0;
       for (final e in r) {
+        if (e is Map && e['note'] is String) {
+          Diag.ev('照片找臉：${e['note']}');
+          continue;
+        }
         final f = e is Map ? FaceBox.fromMap(e) : null;
-        if (f != null) out.add(f);
+        if (f != null) {
+          out.add(f);
+          if (e is Map && e['src'] == 2) tiled++;
+        }
       }
+      if (tiled > 0) Diag.ev('照片找臉：${out.length} 張，切塊多找到 $tiled 張');
       if (Diag.fusePaused.containsKey(fuseKey)) {
         await Diag.fuseReset(fuseKey);
       }
