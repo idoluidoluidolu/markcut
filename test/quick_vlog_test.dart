@@ -3,7 +3,7 @@
 // 使用者 11-07：「各取兩秒（預設）、可以調整時間跟段落、也可以個別調整
 // 影片長度，不卡死全部都要共同秒數」。守的是：
 // - 每支取中間、不到就整支
-// - 改「每段」只動跟著走的段，個別改過的不動；「全部統一」全部一起改
+// - 改「每段」＝每一段都改，個別改過的也一起（11-08：「全部改成 0.5 秒一個」）
 // - 改完整軌頭尾接齊（不留洞、不重疊、從 0 開始）
 import 'package:flutter_test/flutter_test.dart';
 
@@ -63,46 +63,41 @@ void main() {
     expect(tl.duration, closeTo(2 + 1.2 + 2, 1e-9));
   });
 
-  test('改每段：跟著走的換成新長度、中心不動，整軌接齊', () {
+  test('改每段：每一段換成新長度、中心不動，整軌接齊', () {
     final tl = _vlog([10, 10, 10]);
-    final n = vlogApplySeconds(tl, from: 2, to: 3);
+    final n = vlogApplySeconds(tl, to: 3);
     expect(n, 3);
     for (final c in vlogSegments(tl)) {
       expect(c.length, closeTo(3, 1e-9));
       expect((c.trimStart + c.trimEnd) / 2, closeTo(5, 1e-9), reason: '中心不動');
     }
     _expectContiguous(tl);
-    vlogApplySeconds(tl, from: 3, to: 1);
+    vlogApplySeconds(tl, to: 1);
     for (final c in vlogSegments(tl)) {
       expect(c.length, closeTo(1, 1e-9));
     }
     _expectContiguous(tl);
   });
 
-  test('個別改過長度的不跟著每段走；全部統一才一起改', () {
-    final tl = _vlog([10, 10, 10]);
+  test('全部改成 0.5 秒：個別改過的、原片不到 2 秒的也一起改', () {
+    final tl = _vlog([10, 10, 1.2]);
     final mid = vlogSegments(tl)[1];
     vlogSetLength(mid, tl.sourceOf(mid), 3.5);
     vlogRelay(tl);
-    expect(vlogHasCustom(tl, 2), isTrue);
+    expect(vlogFollows(mid, tl.sourceOf(mid), 2), isFalse, reason: '個別改過');
 
-    final n = vlogApplySeconds(tl, from: 2, to: 1.5);
-    expect(n, 2, reason: '自訂的那段不算');
-    final segs = vlogSegments(tl);
-    expect(segs[0].length, closeTo(1.5, 1e-9));
-    expect(segs[1].length, closeTo(3.5, 1e-9), reason: '個別改過的不動');
-    expect(segs[2].length, closeTo(1.5, 1e-9));
-    _expectContiguous(tl);
-
-    vlogApplySeconds(tl, from: 1.5, to: 1.5, all: true);
+    final n = vlogApplySeconds(tl, to: 0.5);
+    expect(n, 3, reason: '每一段都算');
     for (final c in vlogSegments(tl)) {
-      expect(c.length, closeTo(1.5, 1e-9));
+      expect(c.length, closeTo(0.5, 1e-9));
+      expect(vlogFollows(c, tl.sourceOf(c), 0.5), isTrue, reason: '改完都標白字');
     }
-    expect(vlogHasCustom(tl, 1.5), isFalse);
+    expect((mid.trimStart + mid.trimEnd) / 2, closeTo(5, 1e-9), reason: '中心不動');
+    expect(tl.duration, closeTo(1.5, 1e-9));
     _expectContiguous(tl);
   });
 
-  test('拖滑桿經過自訂段的長度，不會把它捲進來；拖回原值回到原本那一截', () {
+  test('一張表裡來回拖：個別改過的也跟著變；夾到原片結尾的拖回原值回到原本那一截', () {
     final tl = _vlog([10, 10, 10]);
     final mid = vlogSegments(tl)[1];
     vlogSetLength(mid, tl.sourceOf(mid), 3.5);
@@ -110,20 +105,21 @@ void main() {
     final last = vlogSegments(tl)[2];
     last.trimStart = 8; // 換到靠結尾的那一截
     last.trimEnd = 10;
-    final edit = VlogSecondsEdit(tl, from: 2);
-    expect(edit.count, 2);
-    // 一格一格拖到 5、再拖回 2（中途經過 3.5、也會夾到原片結尾）
+    final edit = VlogSecondsEdit(tl);
+    expect(edit.count, 3);
+    // 一格一格拖到 5、再拖回 2（中途會夾到原片結尾）
     for (var s = 2.1; s <= 5.0001; s += 0.1) {
       edit.apply(s);
     }
-    expect(mid.length, closeTo(3.5, 1e-9), reason: '自訂的那段不能半路被捲進來');
+    expect(mid.length, closeTo(5, 1e-9));
     expect(last.trimEnd, closeTo(10, 1e-9));
     for (var s = 4.9; s >= 1.9999; s -= 0.1) {
       edit.apply(s);
     }
     expect(last.trimStart, closeTo(8, 1e-9), reason: '拖回原值要回到原本那一截');
     expect(last.trimEnd, closeTo(10, 1e-9));
-    expect(mid.length, closeTo(3.5, 1e-9));
+    expect(mid.length, closeTo(2, 1e-9));
+    expect((mid.trimStart + mid.trimEnd) / 2, closeTo(5, 1e-9));
     _expectContiguous(tl);
   });
 
@@ -131,13 +127,12 @@ void main() {
     final tl = _vlog([10, 1.2]);
     final short = vlogSegments(tl)[1];
     expect(vlogFollows(short, tl.sourceOf(short), 2), isTrue);
-    expect(vlogHasCustom(tl, 2), isFalse);
 
-    vlogApplySeconds(tl, from: 2, to: 0.8);
+    vlogApplySeconds(tl, to: 0.8);
     expect(short.length, closeTo(0.8, 1e-9));
     expect((short.trimStart + short.trimEnd) / 2, closeTo(0.6, 1e-9));
 
-    vlogApplySeconds(tl, from: 0.8, to: 5);
+    vlogApplySeconds(tl, to: 5);
     expect(short.length, closeTo(1.2, 1e-9), reason: '原片只有 1.2 秒');
     expect(vlogSegments(tl)[0].length, closeTo(5, 1e-9));
     _expectContiguous(tl);
@@ -148,11 +143,11 @@ void main() {
     final c = vlogSegments(tl).single;
     c.trimStart = 7;
     c.trimEnd = 9;
-    vlogApplySeconds(tl, from: 2, to: 1);
+    vlogApplySeconds(tl, to: 1);
     expect(c.trimStart, closeTo(7.5, 1e-9));
     expect(c.trimEnd, closeTo(8.5, 1e-9));
     // 靠近結尾變長：夾在原片範圍內
-    vlogApplySeconds(tl, from: 1, to: 6);
+    vlogApplySeconds(tl, to: 6);
     expect(c.trimEnd, closeTo(10, 1e-9));
     expect(c.trimStart, closeTo(4, 1e-9));
   });
@@ -164,7 +159,7 @@ void main() {
     fast.trimEnd = fast.trimStart + 4; // 原片 4 秒、2 倍速＝時間軸 2 秒
     vlogRelay(tl);
     expect(vlogFollows(fast, tl.sourceOf(fast), 2), isTrue);
-    vlogApplySeconds(tl, from: 2, to: 3);
+    vlogApplySeconds(tl, to: 3);
     expect(fast.length, closeTo(3, 1e-9));
     expect(fast.srcLength, closeTo(6, 1e-9));
   });
@@ -188,7 +183,7 @@ void main() {
       track: 1,
     );
     tl.clips.add(music);
-    vlogApplySeconds(tl, from: 2, to: 4);
+    vlogApplySeconds(tl, to: 4);
     expect(music.length, closeTo(30, 1e-9));
     expect(music.offset, 0);
     expect(vlogSegments(tl).length, 2);
@@ -216,13 +211,19 @@ void main() {
     );
     tl.clips.add(c);
     expect(vlogFollows(c, tl.sources[0], 2), isFalse);
-    vlogApplySeconds(tl, from: 2, to: 3, all: true);
+    vlogApplySeconds(tl, to: 3);
     expect(c.trimStart, 0);
     expect(c.trimEnd, closeTo(3, 1e-9));
     expect(vlogMaxLength(c, tl.sources[0]), kVlogMaxSec);
   });
 
-  test('秒數字串與滑桿上限', () {
+  test('秒數字串、快選、滑桿上限', () {
+    // 快選照順序、都在滑桿範圍內，最短那顆就是 0.5（使用者舉的例子）
+    expect(kVlogPresets.first, kVlogMinSec);
+    for (var i = 0; i < kVlogPresets.length; i++) {
+      expect(kVlogPresets[i], inInclusiveRange(kVlogMinSec, kVlogMaxSec));
+      if (i > 0) expect(kVlogPresets[i], greaterThan(kVlogPresets[i - 1]));
+    }
     expect(vlogSecLabel(2), '2');
     expect(vlogSecLabel(2.5), '2.5');
     expect(vlogSecLabel(2.04), '2');

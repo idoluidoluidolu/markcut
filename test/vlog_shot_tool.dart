@@ -3,7 +3,7 @@
 // 真的佈景、真的字體（NotoSansTC＋Material Icons）、iPhone 14 視窗
 // （390×844、DPR 3、安全區 47/34）。走使用者的路：首頁＋開始 → 快速 Vlog
 // 選單那一列；剪輯頁用 videoPaths＋vlogEntry 進場（中繼資料由假通道回），
-// 拍每段膠囊、每段表、選一段＝這段、這段表、自訂段、全部統一：
+// 拍每段膠囊、每段表、快選 0.5、選一段（每段＋這段兩顆）、這段表、自訂段：
 //
 //   MARKCUT_SHOT_OUT=<資料夾> flutter test --no-pub test/vlog_shot_tool.dart
 //
@@ -244,7 +244,7 @@ void main() {
     await t.pumpWidget(const SizedBox());
   });
 
-  testWidgets('剪輯頁：每段、這段、自訂、全部統一', (t) async {
+  testWidgets('剪輯頁：每段、快選、這段、自訂', (t) async {
     phone(t);
     await t.pumpWidget(
       app(
@@ -261,7 +261,7 @@ void main() {
       final s = t.widget<Slider>(
         find.byKey(const ValueKey('vlog-sheet-slider')),
       );
-      s.onChangeStart!(s.value);
+      s.onChangeStart?.call(s.value);
       s.onChanged!(to);
       s.onChangeEnd!(to);
       await settle(t, 10);
@@ -272,28 +272,37 @@ void main() {
       await settle(t, 10);
     }
 
+    Future<void> preset(String label) async {
+      await t.tap(find.byKey(ValueKey('vlog-preset-$label')));
+      await settle(t, 10);
+    }
+
     await t.tap(find.byKey(const ValueKey('vlog-pill')));
     await settle(t, 10);
     await snap(t, 'vlog_2_sheet.png');
+    await preset('0.5');
+    await snap(t, 'vlog_3_sheet_05.png');
+    await preset('2');
     await close();
 
     final lane = modelOf(t).onTrack(0);
     editorOf(t).onSelect(lane[1].id);
     await settle(t, 10);
-    await snap(t, 'vlog_3_selected.png');
-    await t.tap(find.byKey(const ValueKey('vlog-pill')));
+    await snap(t, 'vlog_4_selected.png');
+    await t.tap(find.byKey(const ValueKey('vlog-seg-pill')));
     await settle(t, 10);
     await slide(3.5);
-    await snap(t, 'vlog_4_clip_sheet.png');
+    await snap(t, 'vlog_5_seg_sheet.png');
     await close();
-    await snap(t, 'vlog_5_custom_selected.png');
+    await snap(t, 'vlog_6_custom_selected.png');
 
     editorOf(t).onSelect(-1);
     await settle(t, 10);
-    await snap(t, 'vlog_6_custom.png');
+    await snap(t, 'vlog_7_custom.png');
     await t.tap(find.byKey(const ValueKey('vlog-pill')));
     await settle(t, 10);
-    await snap(t, 'vlog_7_unify.png');
+    await preset('1');
+    await snap(t, 'vlog_8_all_1s.png');
     await close();
 
     await t.pumpWidget(const SizedBox());

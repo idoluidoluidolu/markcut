@@ -16921,9 +16921,22 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   cropTarget != null)
                 _previewCropButton(cropTarget),
               if (!_fullscreen) _canvasHint(),
-              // 快速 Vlog：左上「每段／這段 N 秒」（跟右上的比例膠囊對稱）
+              // 快速 Vlog：左上「每段 N 秒」，選著一段時旁邊多一顆「這段」。
+              // 右邊讓出全螢幕＋比例膠囊那排；字級放大擠不下就整排縮小
               if (_vlogPillShown)
-                Positioned(left: 0, top: 0, child: _vlogPill()),
+                Positioned(
+                  left: 8,
+                  top: 2,
+                  right: 104,
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.topLeft,
+                      child: _vlogPills(),
+                    ),
+                  ),
+                ),
               // 自動碼人臉：找的時候左上角一顆小膠囊（不擋操作；每段膠囊
               // 在的話排在它下面）
               if (_faceJob != null && !_fullscreen)
@@ -17603,7 +17616,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       !_vBrushMode &&
       _tabs.index == 0;
 
-  /// 左上角找臉／去背的進度膠囊要往下讓多少（每段膠囊佔著最上面時）
+  /// 左上角找臉／去背的進度膠囊要往下讓多少（每段膠囊佔著最上面時：
+  /// 膠囊在 2~36，進度膠囊從 8+34＝42 開始）
   double get _vlogChipShift => _vlogPillShown ? 34 : 0;
 
   /// 時間軸片段右下角的秒數標：跟著每段走的白字、個別改過長度的琥珀字
@@ -17615,54 +17629,121 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return vlogFollows(c, s, sec) ? kText : kSelect;
   }
 
-  /// 快速 Vlog 左上那顆：沒選片段＝「每段 N 秒」（改全部）；選著一段＝
-  /// 「這段 N 秒」（只改它，琥珀框跟時間軸的選取框同色）。長相跟右上的
-  /// 比例膠囊同一套（使用者在畫布選的甲案）
-  Widget _vlogPill() {
+  /// 快速 Vlog 左上：「每段 N 秒」一直都在（改全部）；選著一段時旁邊再多
+  /// 一顆「這段 N 秒」（只改它，琥珀框跟時間軸的選取框同色）。
+  ///
+  /// 11-08 使用者：原本那顆（10.5 字、淡底，跟右上比例膠囊同款，選了片段
+  /// 還會變成「這段」）他沒發現能點——「做得太不明顯了」。畫布選甲：放大、
+  /// 白框、不因為選取換意思
+  Widget _vlogPills() {
     final seg = _vlogSelSegment;
-    final label = seg == null
-        ? '每段 ${vlogSecLabel(_vlogSec!)} 秒'
-        : '這段 ${vlogSecLabel(seg.length)} 秒';
-    void open() => _openVlogSheet(seg);
-    // 膠囊本身只有二十幾點高：外圍 6 點也算按到（跟右上那排同樣的留白）
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: open,
-      child: Padding(
-        padding: const EdgeInsets.all(6),
-        child: InkWell(
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _vlogPill(
           key: const ValueKey('vlog-pill'),
-          borderRadius: BorderRadius.circular(kTagRadius),
-          onTap: open,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(kTagRadius),
-              border: Border.all(
-                color: seg == null ? Colors.transparent : kSelect,
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.timer_outlined,
-                  size: 12,
-                  color: seg == null ? kTextDim : kSelect,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 10.5,
-                    color: kIcon,
-                    height: 1.2,
-                  ),
-                ),
-                const SizedBox(width: 2),
-                const Icon(Icons.expand_more, size: 13, color: kTextDim),
+          label: '每段 ${vlogSecLabel(_vlogSec!)} 秒',
+          border: Colors.white.withValues(alpha: 0.45),
+          timer: true,
+          onTap: _openVlogSheet,
+        ),
+        if (seg != null) ...[
+          const SizedBox(width: 8),
+          _vlogPill(
+            key: const ValueKey('vlog-seg-pill'),
+            label: '這段 ${vlogSecLabel(seg.length)} 秒',
+            border: kSelect,
+            timer: false,
+            onTap: () => _openVlogSheet(seg),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// 左上那種膠囊：34 高、亮階底、白字、後面下拉箭頭（看得出按了會開東西）。
+  /// [timer]＝前面計時器（「每段」那顆；「這段」省掉，兩顆並排才不會擠到
+  /// 右上那排）
+  Widget _vlogPill({
+    required Key key,
+    required String label,
+    required Color border,
+    required bool timer,
+    required VoidCallback onTap,
+  }) {
+    final radius = BorderRadius.circular(17);
+    return Material(
+      type: MaterialType.transparency,
+      child: InkWell(
+        key: key,
+        borderRadius: radius,
+        onTap: onTap,
+        child: Container(
+          height: 34,
+          padding: EdgeInsets.fromLTRB(timer ? 11 : 13, 0, 8, 0),
+          decoration: BoxDecoration(
+            color: kPanelHi,
+            borderRadius: radius,
+            border: Border.all(color: border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (timer) ...[
+                const Icon(Icons.timer_outlined, size: 17, color: Colors.white),
+                const SizedBox(width: 6),
               ],
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                  height: 1.2,
+                ),
+              ),
+              const SizedBox(width: 2),
+              const Icon(Icons.expand_more, size: 18, color: kText),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 秒數表的快選鈕。選中的＝白框＋亮階底（設定面板裡「選項」選中一律
+  /// 這套，見 theme.dart 的 kAmber）
+  Widget _vlogPresetChip(
+    double sec, {
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final radius = BorderRadius.circular(17);
+    return InkWell(
+      key: ValueKey('vlog-preset-${vlogSecLabel(sec)}'),
+      borderRadius: radius,
+      onTap: onTap,
+      child: Container(
+        height: 34,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        decoration: BoxDecoration(
+          color: selected ? kPanelHi : Colors.transparent,
+          borderRadius: radius,
+          border: Border.all(
+            color: selected ? kAmber : kBorder,
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            vlogSecLabel(sec),
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+              color: selected ? Colors.white : kIcon,
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
         ),
@@ -17670,13 +17751,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  /// 快速 Vlog 的秒數表：大數字＋滑桿。[clip] 給了＝只改這一段（「這段」）；
-  /// 沒給＝改「每段」——跟著走的那幾段一起變，個別改過的不動，有個別改過
-  /// 的才出現「全部統一」。
+  /// 快速 Vlog 的秒數表：大數字＋快選鈕＋滑桿。[clip] 給了＝只改這一段
+  ///（「這段」）；沒給＝改「每段」：每一段都換成這個長度，個別改過的也一起
+  ///（使用者 11-08：「全部改成 0.5 秒一個」）。
   ///
-  /// 拖的時候只重畫時間軸（遮罩透明，看得到上面的片段跟著長短），放手才
-  /// 重組合成（[_vlogCommit]）。整張表算一步上一步（同其他設定表：第一筆
-  /// 改動拍一份快照）
+  /// 這張表裡的每一次改動都從打開那一刻的樣子重算（見 [VlogSecondsEdit]），
+  /// 快選、滑桿來回換，取的那一截也不會一路偏掉。拖的時候只重畫時間軸
+  ///（遮罩透明，看得到上面的片段跟著長短），放手／按快選才重組合成
+  ///（[_vlogCommit]）。整張表算一步上一步（同其他設定表：第一筆改動拍一份
+  /// 快照）
   Future<void> _openVlogSheet([TimelineClip? clip]) async {
     if (_vlogSec == null) return;
     _pause();
@@ -17692,48 +17775,44 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
         : math.min(kVlogMinSec, math.max(0.1, (clip.length * 10).round() / 10));
     final canSlide = maxSec - minSec >= 0.1;
     var sec = (clip?.length ?? _vlogSec!).clamp(minSec, maxSec).toDouble();
+    // 快選只出這段拉得到的（原片只有 1.2 秒的，3、5 秒按了也變不了）
+    final presets = [
+      for (final p in kVlogPresets)
+        if (p >= minSec - 1e-9 && p <= maxSec + 1e-9) p,
+    ];
     var undoPushed = false;
-    VlogSecondsEdit? edit; // 每段：這一手開拉時記下跟著走的段
-    (double, double)? orig; // 這段：開拉那一刻取的那一截
+    VlogSecondsEdit? edit; // 每段：第一次改的時候記下每一段原本取的那一截
+    final orig = clip == null ? null : (clip.trimStart, clip.trimEnd);
 
-    void firstChange() {
-      if (undoPushed) return;
-      _pushUndo();
-      undoPushed = true;
-    }
-
-    void dragStart() {
+    void apply(double next) {
+      if (!undoPushed) {
+        _pushUndo();
+        undoPushed = true;
+      }
+      sec = next;
       if (clip == null) {
-        edit = VlogSecondsEdit(_tl, from: _vlogSec!);
+        (edit ??= VlogSecondsEdit(_tl)).apply(sec);
+        _vlogSec = sec;
       } else {
-        orig = (clip.trimStart, clip.trimEnd);
+        clip.trimStart = orig!.$1;
+        clip.trimEnd = orig.$2;
+        vlogSetLength(clip, src!, sec);
+        vlogRelay(_tl);
       }
     }
 
     void dragTo(double v, StateSetter setSheet) {
-      final next = ((v * 10).round() / 10).clamp(minSec, maxSec);
+      final next = ((v * 10).round() / 10).clamp(minSec, maxSec).toDouble();
       if ((next - sec).abs() < 1e-9) return;
-      firstChange();
-      sec = next.toDouble();
-      _setTimelineLive(() {
-        if (clip == null) {
-          (edit ??= VlogSecondsEdit(_tl, from: _vlogSec!)).apply(sec);
-          _vlogSec = sec;
-        } else {
-          final o = orig ??= (clip.trimStart, clip.trimEnd);
-          clip.trimStart = o.$1;
-          clip.trimEnd = o.$2;
-          vlogSetLength(clip, src!, sec);
-          vlogRelay(_tl);
-        }
-      });
+      _setTimelineLive(() => apply(next));
       setSheet(() {});
     }
 
-    void unifyAll(StateSetter setSheet) {
-      firstChange();
-      setState(() => VlogSecondsEdit(_tl, from: sec, all: true).apply(sec));
-      _vlogCommit(gesture: false);
+    // 「每段」按到現在選著的那顆也照套：個別改過的那幾段要靠它一起改回來
+    void pick(double v, StateSetter setSheet) {
+      if (clip != null && (v - sec).abs() < 1e-9) return;
+      setState(() => apply(v));
+      _vlogCommit(gesture: false, seekTo: clip?.offset);
       setSheet(() {});
     }
 
@@ -17748,12 +17827,13 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
           final sub = clip == null
               // 「 · 」：App 內建的中文字型是子集，日文的「・」沒收，
               // 會畫成方框（截圖看到的）；別處也都用這個點
-              ? '${segs.length} 段 · 總長 ${_fmt(_tl.duration)}'
+              ? '全部 ${segs.length} 段 · 總長 ${_fmt(_tl.duration)}'
               : '第 ${segs.indexWhere((c) => c.id == clip.id) + 1} 段';
-          final custom = clip == null && vlogHasCustom(_tl, sec);
+          // 壓矮：iPhone 標準高度下表的上緣要停在主軌下面，拖的時候看得到
+          // 每段右下角的秒數標跟著變
           return SafeArea(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -17787,7 +17867,32 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 12, color: kTextDim),
                   ),
-                  const SizedBox(height: 6),
+                  // 快選：一排平分，窄螢幕／字級放大時每顆跟著縮（最寬 48）
+                  if (presets.length > 1) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        for (final p in presets)
+                          Flexible(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                              ),
+                              child: SizedBox(
+                                width: 48,
+                                child: _vlogPresetChip(
+                                  p,
+                                  selected: (p - sec).abs() < 1e-9,
+                                  onTap: () => pick(p, setSheet),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 2),
                   SliderTheme(
                     data: SliderTheme.of(context).copyWith(
                       trackHeight: 4,
@@ -17805,39 +17910,12 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       divisions: canSlide
                           ? ((maxSec - minSec) * 10).round()
                           : null,
-                      onChangeStart: canSlide ? (_) => dragStart() : null,
                       onChanged: canSlide ? (v) => dragTo(v, setSheet) : null,
                       onChangeEnd: canSlide
                           ? (_) => _vlogCommit(seekTo: clip?.offset)
                           : null,
                     ),
                   ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          vlogSecLabel(minSec),
-                          style: const TextStyle(fontSize: 11, color: kTextDim),
-                        ),
-                        Text(
-                          '${vlogSecLabel(maxSec)} 秒',
-                          style: const TextStyle(fontSize: 11, color: kTextDim),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (custom) ...[
-                    const SizedBox(height: 10),
-                    Center(
-                      child: OutlinedButton(
-                        key: const ValueKey('vlog-unify'),
-                        onPressed: () => unifyAll(setSheet),
-                        child: const Text('全部統一'),
-                      ),
-                    ),
-                  ],
                 ],
               ),
             ),

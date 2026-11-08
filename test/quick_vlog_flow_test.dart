@@ -3,14 +3,17 @@
 //
 // 使用者 11-07：「丟一堆影片進去、各取兩秒（預設）、可以調整時間跟段落、
 // 串成一部；也可以個別調整影片長度，不卡死全部都要共同秒數」；畫布選甲
-// ＝原本的剪輯畫面，左上多一顆「每段 N 秒」，選著一段時變「這段」。
+// ＝原本的剪輯畫面，左上多一顆「每段 N 秒」。
+// 11-08：「要有地方能一次調整整體秒數，例如全部改成 0.5 秒一個」——原本那顆
+// 太不明顯、選了片段還會變成「這段」；畫布再選甲：放大、一直都是「每段」，
+// 選著一段時旁邊另外多一顆「這段」；秒數表加快選鈕。
 //
 // 守的是：
 // - 進場每支取中間 2 秒、不到 2 秒整支、照挑選順序頭尾接；左上「每段 2 秒」；
 //   不帶預設浮水印字；緊接開著
-// - 改每段：跟著走的變、整軌接齊；時間軸片段右下角標秒數
-// - 選一段：膠囊變「這段」、只改那段（琥珀秒數）；之後改每段不動它；
-//   有自訂的才出現「全部統一」，按了一起改
+// - 改每段：每一段都變（個別改過的也一起）、整軌接齊；時間軸片段右下角標秒數
+// - 選一段：「每段」照樣在，旁邊多「這段」，只改那段（琥珀秒數）
+// - 快選：每段按 0.5 全部變 0.5；這段只出原片給得起的
 // - 上一步：片段長度跟膠囊的秒數一起退回去
 import 'dart:io';
 
@@ -56,16 +59,27 @@ List<Color?> _tagColors(String label) => [
   for (final e in find.text(label).evaluate()) (e.widget as Text).style?.color,
 ];
 
-Future<void> _openPill(WidgetTester t) async {
-  await t.tap(find.byKey(const ValueKey('vlog-pill')));
+/// 打開「每段」（[seg]＝「這段」）的秒數表
+Future<void> _openPill(WidgetTester t, {bool seg = false}) async {
+  await t.tap(find.byKey(ValueKey(seg ? 'vlog-seg-pill' : 'vlog-pill')));
   await settle(t, 6);
   expect(find.byKey(const ValueKey('vlog-sheet-slider')), findsOneWidget);
+}
+
+/// 秒數表上的大數字
+String? _sheetSec(WidgetTester t) =>
+    t.widget<Text>(find.byKey(const ValueKey('vlog-sheet-sec'))).data;
+
+/// 按秒數表上的快選
+Future<void> _preset(WidgetTester t, String label) async {
+  await t.tap(find.byKey(ValueKey('vlog-preset-$label')));
+  await settle(t, 6);
 }
 
 /// 照手指拖滑桿的順序叫：按下、拖到 [to]、放開
 Future<void> _slide(WidgetTester t, double to) async {
   final s = t.widget<Slider>(find.byKey(const ValueKey('vlog-sheet-slider')));
-  s.onChangeStart!(s.value);
+  s.onChangeStart?.call(s.value);
   s.onChanged!(to);
   s.onChangeEnd!(to);
   await settle(t, 6);
@@ -189,16 +203,12 @@ void main() {
     await drain(t);
   });
 
-  testWidgets('改每段：跟著走的變長、短的維持整支，整軌接齊', (t) async {
+  testWidgets('改每段：每段都變長、短的維持整支，整軌接齊', (t) async {
     await open(t);
     await _openPill(t);
-    expect(
-      find.byKey(const ValueKey('vlog-unify')),
-      findsNothing,
-      reason: '沒有自訂的段時不出現全部統一',
-    );
+    expect(find.text('全部 3 段 · 總長 00:05.2'), findsOneWidget);
     await _slide(t, 3);
-    expect(find.text('3'), findsOneWidget, reason: '大數字跟著變');
+    expect(_sheetSec(t), '3', reason: '大數字跟著變');
     await _closeSheet(t);
     final lane = _lane();
     expect(lane[0].length, closeTo(3, 1e-6));
@@ -211,13 +221,15 @@ void main() {
     await drain(t);
   });
 
-  testWidgets('選一段＝只改這段；之後改每段不動它；全部統一一起改', (t) async {
+  testWidgets('選一段：每段照樣在、旁邊多這段；這段只改它；每段按快選全部一起改', (t) async {
     await open(t);
+    expect(find.byKey(const ValueKey('vlog-seg-pill')), findsNothing);
     final first = _lane()[0];
     editorOf(t).onSelect(first.id);
     await settle(t, 6);
-    expect(find.text('這段 2 秒'), findsOneWidget, reason: '選著一段時膠囊變「這段」');
-    await _openPill(t);
+    expect(find.text('每段 2 秒'), findsOneWidget, reason: '選著一段時「每段」不能不見');
+    expect(find.text('這段 2 秒'), findsOneWidget, reason: '旁邊多一顆「這段」');
+    await _openPill(t, seg: true);
     await _slide(t, 4.5);
     await _closeSheet(t);
     var lane = _lane();
@@ -225,39 +237,52 @@ void main() {
     expect(lane[2].length, closeTo(2, 1e-6), reason: '別段不動');
     _expectContiguous();
     expect(find.text('這段 4.5 秒'), findsOneWidget);
+    expect(find.text('每段 2 秒'), findsOneWidget);
     expect(_tagColors('4.5s'), [kSelect], reason: '個別改過的段標琥珀字');
 
-    // 取消選取：回到每段；改每段時自訂的那段不動
-    editorOf(t).onSelect(-1);
-    await settle(t, 6);
-    expect(find.text('每段 2 秒'), findsOneWidget);
+    // 還選著那段，直接按「每段」：按現在選著的 2 也照套，個別改過的一起改回來
     await _openPill(t);
-    expect(
-      find.byKey(const ValueKey('vlog-unify')),
-      findsOneWidget,
-      reason: '有自訂的段才出現全部統一',
-    );
-    await _slide(t, 1.5);
+    await _preset(t, '2');
     lane = _lane();
-    expect(lane[0].length, closeTo(4.5, 1e-6), reason: '自訂的不跟著每段走');
-    expect(lane[1].length, closeTo(1.2, 1e-6));
-    expect(lane[2].length, closeTo(1.5, 1e-6));
+    expect(lane[0].length, closeTo(2, 1e-6), reason: '按 2 也要把自訂的改回 2');
     _expectContiguous();
+    expect(_tagColors('2.0s'), [kText, kText], reason: '改回來就是跟著每段走');
+    expect(find.text('4.5s'), findsNothing);
 
-    await t.tap(find.byKey(const ValueKey('vlog-unify')));
-    await settle(t, 6);
+    // 全部改成 0.5 秒一個（使用者舉的例子）
+    await _preset(t, '0.5');
+    expect(_sheetSec(t), '0.5');
+    expect(find.text('全部 3 段 · 總長 00:01.5'), findsOneWidget);
     lane = _lane();
-    expect(lane[0].length, closeTo(1.5, 1e-6), reason: '全部統一');
-    expect(lane[1].length, closeTo(1.2, 1e-6), reason: '原片只有 1.2 秒');
-    expect(lane[2].length, closeTo(1.5, 1e-6));
+    for (final c in lane) {
+      expect(c.length, closeTo(0.5, 1e-6), reason: '每一段都 0.5，原片短的也一樣');
+    }
+    expect(lane[0].trimStart, closeTo(4.75, 1e-6), reason: '中心不動');
     _expectContiguous();
-    expect(
-      find.byKey(const ValueKey('vlog-unify')),
-      findsNothing,
-      reason: '統一之後就沒有自訂的段了',
-    );
     await _closeSheet(t);
-    expect(find.text('每段 1.5 秒'), findsOneWidget);
+    expect(find.text('每段 0.5 秒'), findsOneWidget);
+    expect(find.text('這段 0.5 秒'), findsOneWidget);
+    await drain(t);
+  });
+
+  testWidgets('這段的快選只出原片給得起的長度', (t) async {
+    await open(t);
+    final short = _lane()[1]; // 原片 1.2 秒
+    editorOf(t).onSelect(short.id);
+    await settle(t, 6);
+    expect(find.text('這段 1.2 秒'), findsOneWidget);
+    await _openPill(t, seg: true);
+    expect(find.byKey(const ValueKey('vlog-preset-0.5')), findsOneWidget);
+    expect(find.byKey(const ValueKey('vlog-preset-1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('vlog-preset-1.5')), findsNothing);
+    expect(find.byKey(const ValueKey('vlog-preset-5')), findsNothing);
+    await _preset(t, '1');
+    expect(short.length, closeTo(1, 1e-6));
+    expect(_lane()[0].length, closeTo(2, 1e-6), reason: '別段不動');
+    _expectContiguous();
+    await _closeSheet(t);
+    expect(find.text('這段 1 秒'), findsOneWidget);
+    expect(find.text('每段 2 秒'), findsOneWidget);
     await drain(t);
   });
 
@@ -299,6 +324,7 @@ void main() {
     await open(t);
     await _openPill(t);
     await _slide(t, 3);
+    await _preset(t, '1');
     await _slide(t, 4);
     await _closeSheet(t);
     expect(find.text('每段 4 秒'), findsOneWidget);

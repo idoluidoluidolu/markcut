@@ -6,15 +6,15 @@ import '../models/timeline.dart';
 ///
 /// 使用者 11-07 的規格：「各取兩秒（預設）、可以調整時間跟段落、
 /// 也可以個別調整影片長度，不卡死全部都要共同秒數」；畫布選甲＝原本的
-/// 剪輯畫面，左上多一顆「每段 N 秒」。
+/// 剪輯畫面，左上多一顆「每段 N 秒」。11-08：要能「全部改成 0.5 秒一個」，
+/// 左上那顆放大、秒數表加快選鈕（[kVlogPresets]）。
 ///
 /// 規則：
 /// - 剛接進來的每一支取「中間」[kVlogDefaultSec] 秒；不到就整支
-/// - 改「每段」＝跟著每段走的那幾段換成新長度（中心不動），個別改過
-///   長度的不動；按「全部統一」才全部一起改
-/// - 「跟著每段走」不另外記旗標，看長度就知道（見 [vlogFollows]）：拖把手、
-///   換段、變速改出來的長度都會自然變成「自訂」，不用每條編輯路徑各補
-///   一行標記（漏一條就會有一段默默被「每段」蓋掉）
+/// - 改「每段」＝每一段都換成新長度（中心不動），個別改過的也一起改；
+///   原片不夠長的就整支
+/// - 個別改一段（選著它的「這段」、拖把手、換段、變速）照樣可以，時間軸
+///   上標琥珀字；「跟著每段走」不另外記旗標，看長度就知道（見 [vlogFollows]）
 /// - 改完長度整軌頭尾接齊：變長的把後面推開、變短的空隙收掉、從 0 開始
 
 /// 每段預設幾秒（使用者指定 2 秒）
@@ -23,6 +23,9 @@ const double kVlogDefaultSec = 2.0;
 /// 「每段」滑桿的範圍。下限 0.5：再短就只剩一閃，影片看不出內容
 const double kVlogMinSec = 0.5;
 const double kVlogMaxSec = 10.0;
+
+/// 秒數表上那排快選（使用者 11-08 舉的例子就是「全部改成 0.5 秒一個」）
+const List<double> kVlogPresets = [0.5, 1, 1.5, 2, 3, 5];
 
 /// 長度差多少以內算「一樣長」：滑桿 0.1 秒一格，拖把手、變速換算都會
 /// 留浮點尾數
@@ -51,9 +54,9 @@ double? _sourceCap(MediaSource s) =>
 
 double _speedOf(TimelineClip c) => c.speed.clamp(0.1, 16.0).toDouble();
 
-/// 這一段是不是跟著「每段 [sec] 秒」走：時間軸長度就是 [sec]；或素材
-/// 本身比 [sec] 短、整支都已經用上了（它能給的最長就這樣，也算跟著走，
-/// 每段改短時要跟著變短）
+/// 這一段是不是跟著「每段 [sec] 秒」走（時間軸片段右下角標白字；不是＝
+/// 個別改過，標琥珀字）：時間軸長度就是 [sec]；或素材本身比 [sec] 短、
+/// 整支都已經用上了（它能給的最長就這樣，也算跟著走）
 bool vlogFollows(TimelineClip c, MediaSource s, double sec) {
   if ((c.length - sec).abs() <= kVlogLenTolerance) return true;
   final cap = _sourceCap(s);
@@ -96,23 +99,15 @@ void vlogRelay(TimelineModel tl, {int track = 0}) {
   tl.closeGaps(track: track, fromZero: true);
 }
 
-/// 一次「改每段」：開始時就記下哪幾段跟著走、各自原本取的是哪一截，
-/// 之後每一格都從原本的樣子重算。
+/// 一次「改每段」（一張秒數表從打開到關掉）：開始時記下每一段原本取的
+/// 是哪一截，之後每一格（滑桿每動一格、每按一次快選）都從原本的樣子重算。
 ///
-/// 為什麼不一格一格接著改：拖滑桿經過某段自訂的長度（例如 3.5）時，
-/// 那段會在那一格被認成「跟著走」、接下來就被一起拖走；中途碰到原片
-/// 頭尾被夾住的段，中心也會一格一格偏掉，拖回原值回不到原本那一截
+/// 為什麼不一格一格接著改：中途碰到原片頭尾被夾住的段，中心會一格一格
+/// 偏掉，拖回原值回不到原本那一截
 class VlogSecondsEdit {
-  VlogSecondsEdit(
-    this.tl, {
-    required double from,
-    bool all = false,
-    this.track = 0,
-  }) {
+  VlogSecondsEdit(this.tl, {this.track = 0}) {
     for (final c in vlogSegments(tl, track: track)) {
-      if (all || vlogFollows(c, tl.sourceOf(c), from)) {
-        _orig[c.id] = (c.trimStart, c.trimEnd);
-      }
+      _orig[c.id] = (c.trimStart, c.trimEnd);
     }
   }
 
@@ -123,7 +118,7 @@ class VlogSecondsEdit {
   /// 這次會動到幾段
   int get count => _orig.length;
 
-  /// 跟著走的那幾段都改成 [sec] 秒，整軌接齊
+  /// 每一段都改成 [sec] 秒（原片不夠長的整支），整軌接齊
   void apply(double sec) {
     for (final c in tl.clips) {
       final o = _orig[c.id];
@@ -136,26 +131,11 @@ class VlogSecondsEdit {
   }
 }
 
-/// 「每段」從 [from] 秒改成 [to] 秒：跟著每段走的那幾段（[all]＝每一段）
-/// 換成新長度，再整軌接齊。回傳改了幾段
-int vlogApplySeconds(
-  TimelineModel tl, {
-  required double from,
-  required double to,
-  bool all = false,
-  int track = 0,
-}) {
-  final edit = VlogSecondsEdit(tl, from: from, all: all, track: track)
-    ..apply(to);
+/// 「每段」改成 [to] 秒：每一段都換成新長度，再整軌接齊。回傳改了幾段
+int vlogApplySeconds(TimelineModel tl, {required double to, int track = 0}) {
+  final edit = VlogSecondsEdit(tl, track: track)..apply(to);
   return edit.count;
 }
-
-/// 有沒有個別改過長度的段（「全部統一」要不要出現）
-bool vlogHasCustom(TimelineModel tl, double sec, {int track = 0}) =>
-    vlogSegments(
-      tl,
-      track: track,
-    ).any((c) => !vlogFollows(c, tl.sourceOf(c), sec));
 
 /// 這一段最長能拉到幾秒（時間軸秒）：滑桿上限，不超過 [kVlogMaxSec]，
 /// 也不超過原片能給的長度
