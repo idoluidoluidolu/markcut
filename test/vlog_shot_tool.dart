@@ -3,7 +3,8 @@
 // 真的佈景、真的字體（NotoSansTC＋Material Icons）、iPhone 14 視窗
 // （390×844、DPR 3、安全區 47/34）。走使用者的路：首頁＋開始 → 快速 Vlog
 // 選單那一列；剪輯頁用 videoPaths＋vlogEntry 進場（中繼資料由假通道回），
-// 拍每段膠囊、每段表、快選 0.5、選一段（每段＋這段兩顆）、這段表、自訂段：
+// 拍時間軸底下的秒數控制列：每段、快選 0.5、點一段（這段）、拖這段、
+// 點原片很短的一段（快選灰掉）、點空白回到每段；另外拍一張 iPhone SE：
 //
 //   MARKCUT_SHOT_OUT=<資料夾> flutter test --no-pub test/vlog_shot_tool.dart
 //
@@ -244,8 +245,7 @@ void main() {
     await t.pumpWidget(const SizedBox());
   });
 
-  testWidgets('剪輯頁：每段、快選、這段、自訂', (t) async {
-    phone(t);
+  Future<void> editor(WidgetTester t) async {
     await t.pumpWidget(
       app(
         VideoEditorScreen(
@@ -255,20 +255,24 @@ void main() {
       ),
     );
     await settle(t, 80);
+  }
+
+  Future<void> leave(WidgetTester t) async {
+    await t.pumpWidget(const SizedBox());
+    await t.pump(const Duration(seconds: 3));
+    await t.pump(const Duration(seconds: 3));
+  }
+
+  testWidgets('剪輯頁：時間軸底下的每段／這段', (t) async {
+    phone(t);
+    await editor(t);
     await snap(t, 'vlog_1_entry.png');
 
     Future<void> slide(double to) async {
-      final s = t.widget<Slider>(
-        find.byKey(const ValueKey('vlog-sheet-slider')),
-      );
+      final s = t.widget<Slider>(find.byKey(const ValueKey('vlog-bar-slider')));
       s.onChangeStart?.call(s.value);
       s.onChanged!(to);
       s.onChangeEnd!(to);
-      await settle(t, 10);
-    }
-
-    Future<void> close() async {
-      await t.tapAt(const Offset(195, 60));
       await settle(t, 10);
     }
 
@@ -277,36 +281,46 @@ void main() {
       await settle(t, 10);
     }
 
-    await t.tap(find.byKey(const ValueKey('vlog-pill')));
-    await settle(t, 10);
-    await snap(t, 'vlog_2_sheet.png');
+    Future<void> select(int id) async {
+      editorOf(t).onSelect(id);
+      await settle(t, 10);
+    }
+
     await preset('0.5');
-    await snap(t, 'vlog_3_sheet_05.png');
+    await snap(t, 'vlog_2_all_05.png');
     await preset('2');
-    await close();
 
     final lane = modelOf(t).onTrack(0);
-    editorOf(t).onSelect(lane[1].id);
-    await settle(t, 10);
-    await snap(t, 'vlog_4_selected.png');
-    await t.tap(find.byKey(const ValueKey('vlog-seg-pill')));
-    await settle(t, 10);
+    await select(lane[1].id);
+    await snap(t, 'vlog_3_selected.png');
     await slide(3.5);
-    await snap(t, 'vlog_5_seg_sheet.png');
-    await close();
-    await snap(t, 'vlog_6_custom_selected.png');
+    await snap(t, 'vlog_4_seg_35.png');
+    await select(lane[2].id); // 原片 1.4 秒：1.5 以上灰掉
+    await snap(t, 'vlog_5_short_selected.png');
+    await select(-1);
+    await snap(t, 'vlog_6_back_to_all.png');
+    await leave(t);
+  });
 
-    editorOf(t).onSelect(-1);
-    await settle(t, 10);
-    await snap(t, 'vlog_7_custom.png');
-    await t.tap(find.byKey(const ValueKey('vlog-pill')));
-    await settle(t, 10);
-    await preset('1');
-    await snap(t, 'vlog_8_all_1s.png');
-    await close();
+  testWidgets('iPhone SE：每段', (t) async {
+    t.view.devicePixelRatio = 2.0;
+    t.view.physicalSize = const Size(750, 1334);
+    t.view.padding = const FakeViewPadding(top: 40);
+    t.view.viewPadding = const FakeViewPadding(top: 40);
+    addTearDown(t.view.reset);
+    await editor(t);
+    await snap(t, 'vlog_7_se.png');
+    await leave(t);
+  });
 
-    await t.pumpWidget(const SizedBox());
-    await t.pump(const Duration(seconds: 3));
-    await t.pump(const Duration(seconds: 3));
+  testWidgets('iPhone 12 mini：每段', (t) async {
+    t.view.devicePixelRatio = 3.0;
+    t.view.physicalSize = const Size(1125, 2436);
+    t.view.padding = const FakeViewPadding(top: 150, bottom: 102);
+    t.view.viewPadding = const FakeViewPadding(top: 150, bottom: 102);
+    addTearDown(t.view.reset);
+    await editor(t);
+    await snap(t, 'vlog_8_mini.png');
+    await leave(t);
   });
 }

@@ -178,8 +178,8 @@ class VideoEditorScreen extends StatefulWidget {
   final bool cutoutEntry;
 
   /// 從首頁「快速 Vlog」進來（[videoPaths] 是挑好的那一批）：每支取中間
-  /// 2 秒、照挑選順序頭尾接在第一軌，左上多一顆「每段 N 秒」。規則見
-  /// services/quick_vlog.dart
+  /// 2 秒、照挑選順序頭尾接在第一軌，時間軸底下多一條「每段」秒數控制
+  ///（選著一段＝「這段」）。規則見 services/quick_vlog.dart
   final bool vlogEntry;
 
   const VideoEditorScreen({
@@ -1378,8 +1378,8 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 隱藏跟軌道的隱藏同一個地位：它決定成品有沒有浮水印，
       // 復原回到某一步時要一起回去
       'wmHidden': _wmHidden,
-      // 快速 Vlog 的「每段」：上一步退回改每段之前，膠囊的秒數也要回去，
-      // 不然片段退回 2 秒、膠囊還寫 3 秒，之後再改每段就認錯哪些段跟著走
+      // 快速 Vlog 的「每段」：上一步退回改每段之前，控制列的秒數也要回去，
+      // 不然片段退回 2 秒、控制列還寫 3 秒，之後再改每段就認錯哪些段跟著走
       'vlogSec': _vlogSec,
     });
   }
@@ -2101,7 +2101,7 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
       // 不存的話重開草稿浮水印又回來、也跟著匯出
       'wmHidden': _wmHidden,
       'extraTracks': _extraBlankTracks,
-      // 快速 Vlog 的專案：草稿開回來左上照樣有「每段 N 秒」
+      // 快速 Vlog 的專案：草稿開回來時間軸底下照樣有「每段 N 秒」
       if (_vlogSec != null) 'vlogSec': _vlogSec,
     };
   }
@@ -14032,13 +14032,10 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 children: [
                   // 軌道多的時候把預覽讓一點空間給時間軸，
                   // 不然四軌以上只剩一條縫可以捲
-                  Expanded(
-                    flex: _tl.usedTracks >= 3 ? 4 : 5,
-                    child: _previewRegion,
-                  ),
+                  Expanded(flex: _timelineRoomy ? 4 : 5, child: _previewRegion),
                   _controlsRegion,
                   Expanded(
-                    flex: _tl.usedTracks >= 3 ? 6 : 5,
+                    flex: _timelineRoomy ? 6 : 5,
                     child: TabBarView(
                       controller: _tabs,
                       // 左右滑動保留給時間軸，分頁只用底部按鈕切換
@@ -16921,35 +16918,16 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                   cropTarget != null)
                 _previewCropButton(cropTarget),
               if (!_fullscreen) _canvasHint(),
-              // 快速 Vlog：左上「每段 N 秒」，選著一段時旁邊多一顆「這段」。
-              // 右邊讓出全螢幕＋比例膠囊那排；字級放大擠不下就整排縮小
-              if (_vlogPillShown)
-                Positioned(
-                  left: 8,
-                  top: 2,
-                  right: 104,
-                  child: Align(
-                    alignment: Alignment.topLeft,
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.topLeft,
-                      child: _vlogPills(),
-                    ),
-                  ),
-                ),
-              // 自動碼人臉：找的時候左上角一顆小膠囊（不擋操作；每段膠囊
-              // 在的話排在它下面）
+              // 快速 Vlog 的秒數控制不在這裡：11-09 起擺在時間軸底下
+              //（_vlogBar），預覽上不再疊任何東西
+              // 自動碼人臉：找的時候左上角一顆小膠囊（不擋操作）
               if (_faceJob != null && !_fullscreen)
-                Positioned(
-                  left: 10,
-                  top: 8 + _vlogChipShift,
-                  child: _faceProgressChip(),
-                ),
+                Positioned(left: 10, top: 8, child: _faceProgressChip()),
               // 去背算遮罩：同一個位置（找臉也在跑就排在它下面）
               if (!_fullscreen)
                 Positioned(
                   left: 10,
-                  top: (_faceJob != null ? 44 : 8) + _vlogChipShift,
+                  top: _faceJob != null ? 44 : 8,
                   child: _cutProgressChip(),
                 ),
               // 工作檔在背景備，不出現在畫面上：進場就能剪，
@@ -17606,20 +17584,6 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return c;
   }
 
-  /// 左上「每段／這段」膠囊要不要畫：快速 Vlog 的專案、剪輯分頁；
-  /// 全螢幕、調色、對照、筆刷這些模式都收起來
-  bool get _vlogPillShown =>
-      _vlogSec != null &&
-      !_fullscreen &&
-      !_colorMode &&
-      !_cmpMode &&
-      !_vBrushMode &&
-      _tabs.index == 0;
-
-  /// 左上角找臉／去背的進度膠囊要往下讓多少（每段膠囊佔著最上面時：
-  /// 膠囊在 2~36，進度膠囊從 8+34＝42 開始）
-  double get _vlogChipShift => _vlogPillShown ? 34 : 0;
-
   /// 時間軸片段右下角的秒數標：跟著每段走的白字、個別改過長度的琥珀字
   Color? _vlogLengthTag(TimelineClip c) {
     final sec = _vlogSec;
@@ -17629,109 +17593,292 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     return vlogFollows(c, s, sec) ? kText : kSelect;
   }
 
-  /// 快速 Vlog 左上：「每段 N 秒」一直都在（改全部）；選著一段時旁邊再多
-  /// 一顆「這段 N 秒」（只改它，琥珀框跟時間軸的選取框同色）。
-  ///
-  /// 11-08 使用者：原本那顆（10.5 字、淡底，跟右上比例膠囊同款，選了片段
-  /// 還會變成「這段」）他沒發現能點——「做得太不明顯了」。畫布選甲：放大、
-  /// 白框、不因為選取換意思
-  Widget _vlogPills() {
-    final seg = _vlogSelSegment;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _vlogPill(
-          key: const ValueKey('vlog-pill'),
-          label: '每段 ${vlogSecLabel(_vlogSec!)} 秒',
-          border: Colors.white.withValues(alpha: 0.45),
-          timer: true,
-          onTap: _openVlogSheet,
-        ),
-        if (seg != null) ...[
-          const SizedBox(width: 8),
-          _vlogPill(
-            key: const ValueKey('vlog-seg-pill'),
-            label: '這段 ${vlogSecLabel(seg.length)} 秒',
-            border: kSelect,
-            timer: false,
-            onTap: () => _openVlogSheet(seg),
-          ),
-        ],
-      ],
-    );
-  }
+  /// 預覽讓一點高度給時間軸（預覽：時間軸＝4：6，平常 5：5）：軌道多的時候
+  ///（不然四軌以上只剩一條縫可以捲），還有快速 Vlog 在矮螢幕上——時間軸
+  /// 底下多一條秒數控制列，iPhone SE 那種高度不讓的話，主軌被擠到要往下捲
+  /// 才看得到。iPhone 12 mini（812）以上照平常
+  bool get _timelineRoomy =>
+      _tl.usedTracks >= 3 ||
+      (_vlogSec != null && MediaQuery.sizeOf(context).height < 800);
 
-  /// 左上那種膠囊：34 高、亮階底、白字、後面下拉箭頭（看得出按了會開東西）。
-  /// [timer]＝前面計時器（「每段」那顆；「這段」省掉，兩顆並排才不會擠到
-  /// 右上那排）
-  Widget _vlogPill({
-    required Key key,
-    required String label,
-    required Color border,
-    required bool timer,
-    required VoidCallback onTap,
-  }) {
-    final radius = BorderRadius.circular(17);
-    return Material(
-      type: MaterialType.transparency,
-      child: InkWell(
-        key: key,
-        borderRadius: radius,
-        onTap: onTap,
-        child: Container(
-          height: 34,
-          padding: EdgeInsets.fromLTRB(timer ? 11 : 13, 0, 8, 0),
-          decoration: BoxDecoration(
-            color: kPanelHi,
-            borderRadius: radius,
-            border: Border.all(color: border),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (timer) ...[
-                const Icon(Icons.timer_outlined, size: 17, color: Colors.white),
-                const SizedBox(width: 6),
-              ],
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
-                  height: 1.2,
-                ),
+  /// 秒數控制列的高度（上排快選 34＋下排滑桿 28＋上下各留 2）。兩排都是
+  /// 固定高，字級放大也是這麼高（字縮進格子裡），時間軸才算得準讓多少。
+  /// iPhone 14 那種高度：時間軸底下那塊黑色空白（約 90）放得下，主軌不用捲
+  static const double _kVlogBarH = 66;
+
+  /// 快速 Vlog 的秒數控制列：時間軸底下、工具列上面那塊黑色空白，一直開著。
+  ///
+  /// 11-09 使用者：「直接不用螢幕上方那個，在黑色這裡顯示每段的秒數控制，
+  /// 點選 clip 後改成該段的秒數控制」（之前左上的膠囊＋秒數表都拿掉）。
+  /// 沒選（或選的不是第一軌的一段）＝「每段」，白：每一段都改成這個長度，
+  /// 個別改過的也一起；選著一段＝「這段」，琥珀（跟時間軸的選取框同色）：
+  /// 只改它。點時間軸空白取消選取就回到每段。
+  ///
+  /// 左欄「每段／這段」＋現在幾秒；右邊上排快選、下排滑桿。滑桿拖的時候
+  /// 只重畫時間軸跟這條（[_tlLiveVN]），放手／按快選才重組合成
+  ///（[_vlogCommit]）；按一次快選、拖一次滑桿各算一步上一步
+  Widget _vlogBar() => ValueListenableBuilder<int>(
+    valueListenable: _tlLiveVN,
+    builder: (context, _, _) => _vlogBarBody(),
+  );
+
+  Widget _vlogBarBody() {
+    final all = _vlogSec;
+    if (all == null) return const SizedBox.shrink();
+    final seg = _vlogSelSegment;
+    final accent = seg == null ? Colors.white : kSelect;
+    final (minSec, maxSec) = _vlogDragRange ?? _vlogRange(seg);
+    final canSlide = maxSec - minSec >= 0.1;
+    final sec = (seg?.length ?? all).clamp(minSec, maxSec).toDouble();
+    final label = vlogSecLabel(sec);
+    // 左欄的字：放大字級時縮進格子裡（兩排是固定高）
+    Widget cell(double h, Widget child) => SizedBox(
+      height: h,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: FittedBox(fit: BoxFit.scaleDown, child: child),
+      ),
+    );
+    return SizedBox(
+      key: const ValueKey('vlog-bar'),
+      height: _kVlogBarH,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 2, 10, 2),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 56,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  cell(
+                    34,
+                    Text(
+                      seg == null ? '每段' : '這段',
+                      key: const ValueKey('vlog-bar-label'),
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: accent,
+                      ),
+                    ),
+                  ),
+                  cell(
+                    28,
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                      textBaseline: TextBaseline.alphabetic,
+                      children: [
+                        Text(
+                          label,
+                          key: const ValueKey('vlog-bar-sec'),
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: accent,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                        const SizedBox(width: 3),
+                        const Text(
+                          '秒',
+                          style: TextStyle(fontSize: 12, color: kTextDim),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 2),
-              const Icon(Icons.expand_more, size: 18, color: kText),
-            ],
-          ),
+            ),
+            Expanded(
+              child: Column(
+                children: [
+                  // 快選：一排平分，窄螢幕／字級放大時每顆跟著縮（最寬 44）。
+                  // 這段原片給不起的灰掉，按了說最長多少
+                  SizedBox(
+                    height: 34,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        for (final p in kVlogPresets)
+                          Flexible(
+                            child: SizedBox(
+                              width: 44,
+                              child: _vlogPresetChip(
+                                p,
+                                selected: vlogSecLabel(p) == label,
+                                enabled:
+                                    p >= minSec - 1e-9 && p <= maxSec + 1e-9,
+                                accent: accent,
+                                onTap: () => _vlogPick(p),
+                                onDisabledTap: () => showHint(
+                                  context,
+                                  '這段最長 ${vlogSecLabel(maxSec)} 秒',
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  // 光暈跟把手一樣大：軌道左右只內縮把手半徑，把手拉到頭
+                  // 剛好切齊上排快選的兩邊（預設內縮光暈半徑，會短一截）
+                  SizedBox(
+                    height: 28,
+                    child: SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 3,
+                        activeTrackColor: accent,
+                        thumbColor: accent,
+                        overlayColor: accent.withValues(alpha: 0.14),
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 8,
+                        ),
+                        overlayShape: const RoundSliderOverlayShape(
+                          overlayRadius: 8,
+                        ),
+                        activeTickMarkColor: Colors.transparent,
+                        inactiveTickMarkColor: Colors.transparent,
+                      ),
+                      child: Slider(
+                        key: const ValueKey('vlog-bar-slider'),
+                        value: sec,
+                        min: minSec,
+                        max: canSlide ? maxSec : minSec + 0.1,
+                        divisions: canSlide
+                            ? ((maxSec - minSec) * 10).round()
+                            : null,
+                        onChangeStart: canSlide
+                            ? (_) => _vlogSlideStart(minSec, maxSec)
+                            : null,
+                        onChanged: canSlide ? (v) => _vlogSlide(seg, v) : null,
+                        onChangeEnd: canSlide
+                            ? (_) => _vlogSlideEnd(seg)
+                            : null,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  /// 秒數表的快選鈕。選中的＝白框＋亮階底（設定面板裡「選項」選中一律
-  /// 這套，見 theme.dart 的 kAmber）
+  /// 秒數控制的範圍：每段 0.5~10；這段＝原片給得起的（最多 10 秒），在時間軸
+  /// 上已經被拉得更長／比 0.5 秒更短的照它現在的（不然一選到它，秒數就跟
+  /// 片段上標的對不起來）
+  (double, double) _vlogRange(TimelineClip? seg) {
+    if (seg == null) return (kVlogMinSec, kVlogMaxSec);
+    return (
+      math.min(kVlogMinSec, math.max(0.1, (seg.length * 10).round() / 10)),
+      math.max(vlogMaxLength(seg, _tl.sourceOf(seg)), seg.length),
+    );
+  }
+
+  /// 秒數控制的那一串改動（見 [VlogSecondsEdit]）：從上次改完到現在時間軸
+  /// 沒被別的操作動過，就接著用同一份「原本那一截」重算（快選、滑桿來回
+  /// 換，取的那一截也不會一路偏掉）；動過就重記一份
+  VlogSecondsEdit? _vlogEdit;
+
+  VlogSecondsEdit _vlogEditNow() {
+    final e = _vlogEdit;
+    if (e != null && e.isCurrent) return e;
+    return _vlogEdit = VlogSecondsEdit(_tl);
+  }
+
+  /// 滑桿這一次（按下到放開）的範圍：這段的範圍有一頭照它現在的長度算，
+  /// 拖的途中跟著變的話把手會跳
+  (double, double)? _vlogDragRange;
+
+  /// 這一次拖動真的改到了（第一次改之前拍上一步，光按一下不算一步）
+  bool _vlogDragMoved = false;
+
+  /// 快選：每段＝每一段都改成 [v]（按到現在那顆也照套：個別改過的那幾段
+  /// 要靠它一起改回來）；這段＝只改選著的那段，播放頭跳到它開頭（同換段）
+  void _vlogPick(double v) {
+    if (_vlogSec == null) return;
+    final seg = _vlogSelSegment;
+    if (seg != null && (seg.length - v).abs() < 1e-6) return;
+    _pause();
+    final edit = _vlogEditNow();
+    final before = edit.signature;
+    final prevSec = _vlogSec;
+    final snap = _snapshot();
+    if (seg == null) {
+      edit.apply(v);
+      _vlogSec = v;
+    } else {
+      edit.applyOne(seg, v);
+    }
+    // 每一段本來就是這個長度：什麼都沒變，不算一步
+    if (edit.signature == before && prevSec == _vlogSec) return;
+    _pushUndoSnapshot(snap);
+    _vlogCommit(gesture: false, seekTo: seg?.offset);
+  }
+
+  void _vlogSlideStart(double minSec, double maxSec) {
+    _pause();
+    _vlogDragRange = (minSec, maxSec);
+    _vlogDragMoved = false;
+  }
+
+  void _vlogSlide(TimelineClip? seg, double v) {
+    final sec = _vlogSec;
+    if (sec == null) return;
+    final (minSec, maxSec) = _vlogDragRange ?? _vlogRange(seg);
+    final next = ((v * 10).round() / 10).clamp(minSec, maxSec).toDouble();
+    if ((next - (seg?.length ?? sec)).abs() < 1e-9) return;
+    if (!_vlogDragMoved) {
+      _vlogDragMoved = true;
+      _pushUndo();
+    }
+    final edit = _vlogEditNow();
+    _setTimelineLive(() {
+      if (seg == null) {
+        edit.apply(next);
+        _vlogSec = next;
+      } else {
+        edit.applyOne(seg, next);
+      }
+    });
+  }
+
+  void _vlogSlideEnd(TimelineClip? seg) {
+    _vlogDragRange = null;
+    if (!_vlogDragMoved) return;
+    _vlogDragMoved = false;
+    _vlogCommit(seekTo: seg?.offset);
+  }
+
+  /// 秒數控制的快選鈕：亮階底的膠囊（黑底上看得出是按鈕）。選中的＝
+  /// [accent] 框＋粗字（每段白、這段琥珀）；[enabled] 關＝這段原片給不起
+  /// 的長度：不填底、字灰掉，按了走 [onDisabledTap]
   Widget _vlogPresetChip(
     double sec, {
     required bool selected,
+    required Color accent,
     required VoidCallback onTap,
+    bool enabled = true,
+    VoidCallback? onDisabledTap,
   }) {
-    final radius = BorderRadius.circular(17);
+    final radius = BorderRadius.circular(15);
     return InkWell(
       key: ValueKey('vlog-preset-${vlogSecLabel(sec)}'),
       borderRadius: radius,
-      onTap: onTap,
+      onTap: enabled ? onTap : onDisabledTap,
       child: Container(
-        height: 34,
+        height: 30,
         alignment: Alignment.center,
         padding: const EdgeInsets.symmetric(horizontal: 4),
         decoration: BoxDecoration(
-          color: selected ? kPanelHi : Colors.transparent,
+          color: enabled ? kPanelHi : Colors.transparent,
           borderRadius: radius,
           border: Border.all(
-            color: selected ? kAmber : kBorder,
+            color: selected ? accent : (enabled ? kPanelHi : kBorder),
             width: selected ? 1.5 : 1,
           ),
         ),
@@ -17742,7 +17889,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
             style: TextStyle(
               fontSize: 14,
               fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
-              color: selected ? Colors.white : kIcon,
+              color: selected
+                  ? accent
+                  : (enabled ? kText : kTextDim.withValues(alpha: 0.35)),
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
@@ -17751,186 +17900,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
     );
   }
 
-  /// 快速 Vlog 的秒數表：大數字＋快選鈕＋滑桿。[clip] 給了＝只改這一段
-  ///（「這段」）；沒給＝改「每段」：每一段都換成這個長度，個別改過的也一起
-  ///（使用者 11-08：「全部改成 0.5 秒一個」）。
-  ///
-  /// 這張表裡的每一次改動都從打開那一刻的樣子重算（見 [VlogSecondsEdit]），
-  /// 快選、滑桿來回換，取的那一截也不會一路偏掉。拖的時候只重畫時間軸
-  ///（遮罩透明，看得到上面的片段跟著長短），放手／按快選才重組合成
-  ///（[_vlogCommit]）。整張表算一步上一步（同其他設定表：第一筆改動拍一份
-  /// 快照）
-  Future<void> _openVlogSheet([TimelineClip? clip]) async {
-    if (_vlogSec == null) return;
-    _pause();
-    final src = clip == null ? null : _tl.sourceOf(clip);
-    // 這段：上限＝原片能給的長度（最多 10 秒）；已經被拉得更長的照它現在的
-    final maxSec = src == null
-        ? kVlogMaxSec
-        : math.max(vlogMaxLength(clip!, src), clip.length);
-    // 下限同理：在時間軸上被拉得比 0.5 秒還短的，照它現在的（不然一打開
-    // 大數字就寫 0.5，跟片段上標的對不起來）
-    final minSec = clip == null
-        ? kVlogMinSec
-        : math.min(kVlogMinSec, math.max(0.1, (clip.length * 10).round() / 10));
-    final canSlide = maxSec - minSec >= 0.1;
-    var sec = (clip?.length ?? _vlogSec!).clamp(minSec, maxSec).toDouble();
-    // 快選只出這段拉得到的（原片只有 1.2 秒的，3、5 秒按了也變不了）
-    final presets = [
-      for (final p in kVlogPresets)
-        if (p >= minSec - 1e-9 && p <= maxSec + 1e-9) p,
-    ];
-    var undoPushed = false;
-    VlogSecondsEdit? edit; // 每段：第一次改的時候記下每一段原本取的那一截
-    final orig = clip == null ? null : (clip.trimStart, clip.trimEnd);
-
-    void apply(double next) {
-      if (!undoPushed) {
-        _pushUndo();
-        undoPushed = true;
-      }
-      sec = next;
-      if (clip == null) {
-        (edit ??= VlogSecondsEdit(_tl)).apply(sec);
-        _vlogSec = sec;
-      } else {
-        clip.trimStart = orig!.$1;
-        clip.trimEnd = orig.$2;
-        vlogSetLength(clip, src!, sec);
-        vlogRelay(_tl);
-      }
-    }
-
-    void dragTo(double v, StateSetter setSheet) {
-      final next = ((v * 10).round() / 10).clamp(minSec, maxSec).toDouble();
-      if ((next - sec).abs() < 1e-9) return;
-      _setTimelineLive(() => apply(next));
-      setSheet(() {});
-    }
-
-    // 「每段」按到現在選著的那顆也照套：個別改過的那幾段要靠它一起改回來
-    void pick(double v, StateSetter setSheet) {
-      if (clip != null && (v - sec).abs() < 1e-9) return;
-      setState(() => apply(v));
-      _vlogCommit(gesture: false, seekTo: clip?.offset);
-      setSheet(() {});
-    }
-
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      // 透明遮罩（同換段）：拖的時候看得到時間軸跟著變
-      barrierColor: Colors.transparent,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) {
-          final segs = vlogSegments(_tl);
-          final sub = clip == null
-              // 「 · 」：App 內建的中文字型是子集，日文的「・」沒收，
-              // 會畫成方框（截圖看到的）；別處也都用這個點
-              ? '全部 ${segs.length} 段 · 總長 ${_fmt(_tl.duration)}'
-              : '第 ${segs.indexWhere((c) => c.id == clip.id) + 1} 段';
-          // 壓矮：iPhone 標準高度下表的上緣要停在主軌下面，拖的時候看得到
-          // 每段右下角的秒數標跟著變
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.baseline,
-                    textBaseline: TextBaseline.alphabetic,
-                    children: [
-                      Text(
-                        vlogSecLabel(sec),
-                        key: const ValueKey('vlog-sheet-sec'),
-                        style: const TextStyle(
-                          fontSize: 40,
-                          height: 1,
-                          fontWeight: FontWeight.w700,
-                          color: kSelect,
-                          fontFeatures: [FontFeature.tabularFigures()],
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        clip == null ? '秒 / 段' : '秒',
-                        style: const TextStyle(fontSize: 13, color: kTextDim),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    sub,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12, color: kTextDim),
-                  ),
-                  // 快選：一排平分，窄螢幕／字級放大時每顆跟著縮（最寬 48）
-                  if (presets.length > 1) ...[
-                    const SizedBox(height: 10),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        for (final p in presets)
-                          Flexible(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                              ),
-                              child: SizedBox(
-                                width: 48,
-                                child: _vlogPresetChip(
-                                  p,
-                                  selected: (p - sec).abs() < 1e-9,
-                                  onTap: () => pick(p, setSheet),
-                                ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ],
-                  const SizedBox(height: 2),
-                  SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      trackHeight: 4,
-                      activeTrackColor: kSelect,
-                      thumbColor: kSelect,
-                      overlayColor: kSelect.withValues(alpha: 0.14),
-                      activeTickMarkColor: Colors.transparent,
-                      inactiveTickMarkColor: Colors.transparent,
-                    ),
-                    child: Slider(
-                      key: const ValueKey('vlog-sheet-slider'),
-                      value: sec,
-                      min: minSec,
-                      max: canSlide ? maxSec : minSec + 0.1,
-                      divisions: canSlide
-                          ? ((maxSec - minSec) * 10).round()
-                          : null,
-                      onChanged: canSlide ? (v) => dragTo(v, setSheet) : null,
-                      onChangeEnd: canSlide
-                          ? (_) => _vlogCommit(seekTo: clip?.offset)
-                          : null,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-    if (!mounted) return;
-    if (undoPushed) _saveDraft();
-    setState(() {});
-  }
-
-  /// 秒數表放手：手勢中只畫在時間軸上的長度補到整頁（時間碼、膠囊），
-  /// 重組合成，播放頭夾回總長以內（[seekTo] 給了就跳過去，「這段」跳到
-  /// 那一段的開頭，跟換段一樣）
+  /// 秒數控制放手／按快選：手勢中只畫在時間軸上的長度補到整頁（時間碼、
+  /// 工具列），重組合成，播放頭夾回總長以內（[seekTo] 給了就跳過去，
+  /// 「這段」跳到那一段的開頭，跟換段一樣）
   void _vlogCommit({double? seekTo, bool gesture = true}) {
     if (!mounted) return;
     if (gesture) {
@@ -18106,10 +18078,15 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                       // 貼著頂端排，不置中：置中會讓時間軸浮在中間，
                       // 上面一塊死空間、下面又沒有固定的留白。
                       // 底部墊 48：軌道再多，最下面永遠有一條空白帶
-                      // 可以抓著左右滑（96 被回報「捲到底留太大」，減半）
+                      // 可以抓著左右滑（96 被回報「捲到底留太大」，減半）。
+                      // 最小高＝分頁扣掉工具列（快速 Vlog 再扣秒數控制列）
                       child: ConstrainedBox(
                         constraints: BoxConstraints(
-                          minHeight: (box.maxHeight - 60).clamp(0.0, 1e9),
+                          minHeight:
+                              (box.maxHeight -
+                                      60 -
+                                      (_vlogSec != null ? _kVlogBarH : 0))
+                                  .clamp(0.0, 1e9),
                         ),
                         child: Align(
                           alignment: Alignment.topCenter,
@@ -18290,6 +18267,9 @@ class _VideoEditorScreenState extends State<VideoEditorScreen>
                 ),
               ),
             ),
+            // 快速 Vlog：秒數控制列擺在時間軸底下那塊黑色空白（使用者
+            // 11-09 指定的位置），一直開著；沒選＝每段、選一段＝這段
+            if (_vlogSec != null) _vlogBar(),
             // 底部工具列（取代原本的上方工具列與音量列）。
             // 不畫分隔線：整個工作區同一個顏色，區塊靠留白分
             Container(

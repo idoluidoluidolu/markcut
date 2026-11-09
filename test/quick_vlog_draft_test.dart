@@ -1,5 +1,5 @@
-// 快速 Vlog 的草稿：「每段」秒數跟著草稿存，從草稿夾開回來左上照樣有
-// 「每段 N 秒」、緊接照樣開著；改每段＝每一段都改（個別改過的也一起，
+// 快速 Vlog 的草稿：「每段」秒數跟著草稿存，從草稿夾開回來時間軸底下
+// 照樣有「每段 N 秒」、緊接照樣開著；改每段＝每一段都改（個別改過的也一起，
 // 使用者 11-08「全部改成 0.5 秒一個」），改完的秒數存回草稿。
 //
 // 一個檔只放一支會寫草稿的編輯頁測試（理由見 draft_cover_harness.dart：
@@ -67,7 +67,15 @@ void main() {
     await t.pumpWidget(editorApp(VideoEditorScreen(draftId: id, draft: draft)));
     await settle(t);
 
-    expect(find.text('每段 3 秒'), findsOneWidget, reason: '每段要照草稿存的');
+    expect(
+      t.widget<Text>(find.byKey(const ValueKey('vlog-bar-label'))).data,
+      '每段',
+    );
+    expect(
+      t.widget<Text>(find.byKey(const ValueKey('vlog-bar-sec'))).data,
+      '3',
+      reason: '每段要照草稿存的',
+    );
     final tidy = t.widget<Icon>(
       find.descendant(
         of: find.ancestor(of: find.text('緊接'), matching: find.byType(InkWell)),
@@ -76,14 +84,10 @@ void main() {
     );
     expect(tidy.color, kSelect, reason: '快速 Vlog 的草稿開回來也緊接');
 
-    await t.tap(find.byKey(const ValueKey('vlog-pill')));
-    await settle(t, 6);
-    final s = t.widget<Slider>(find.byKey(const ValueKey('vlog-sheet-slider')));
+    final s = t.widget<Slider>(find.byKey(const ValueKey('vlog-bar-slider')));
     s.onChangeStart?.call(s.value);
     s.onChanged!(2);
     s.onChangeEnd!(2);
-    await settle(t, 6);
-    await t.tapAt(const Offset(550, 40));
     await settle(t, 6);
 
     final lane = modelOf(t).onTrack(0);

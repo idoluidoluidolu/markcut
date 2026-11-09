@@ -7,7 +7,9 @@ import '../models/timeline.dart';
 /// 使用者 11-07 的規格：「各取兩秒（預設）、可以調整時間跟段落、
 /// 也可以個別調整影片長度，不卡死全部都要共同秒數」；畫布選甲＝原本的
 /// 剪輯畫面，左上多一顆「每段 N 秒」。11-08：要能「全部改成 0.5 秒一個」，
-/// 左上那顆放大、秒數表加快選鈕（[kVlogPresets]）。
+/// 左上那顆放大、秒數表加快選鈕（[kVlogPresets]）。11-09：左上那顆跟秒數表
+/// 都拿掉，秒數控制（快選＋滑桿）直接擺在時間軸底下那塊黑色空白、一直開著；
+/// 沒選＝每段，點一段＝那段。
 ///
 /// 規則：
 /// - 剛接進來的每一支取「中間」[kVlogDefaultSec] 秒；不到就整支
@@ -99,24 +101,40 @@ void vlogRelay(TimelineModel tl, {int track = 0}) {
   tl.closeGaps(track: track, fromZero: true);
 }
 
-/// 一次「改每段」（一張秒數表從打開到關掉）：開始時記下每一段原本取的
-/// 是哪一截，之後每一格（滑桿每動一格、每按一次快選）都從原本的樣子重算。
+/// 一串「改秒數」：開始時記下每一段原本取的是哪一截，之後每一格（滑桿
+/// 每動一格、每按一次快選，改每段、改這段都算）都從原本的樣子重算。
 ///
 /// 為什麼不一格一格接著改：中途碰到原片頭尾被夾住的段，中心會一格一格
-/// 偏掉，拖回原值回不到原本那一截
+/// 偏掉，拖回原值回不到原本那一截。
+///
+/// 11-09 秒數控制從表搬到時間軸底下一直開著，沒有「表關掉」這個收尾：
+/// 編輯頁留著同一份，[isCurrent]（從上次改完到現在時間軸沒被別的操作
+/// 動過）就接著用，不是就重記一份
 class VlogSecondsEdit {
   VlogSecondsEdit(this.tl, {this.track = 0}) {
     for (final c in vlogSegments(tl, track: track)) {
       _orig[c.id] = (c.trimStart, c.trimEnd);
     }
+    _sig = signature;
   }
 
   final TimelineModel tl;
   final int track;
   final Map<int, (double, double)> _orig = {};
+  late String _sig;
 
   /// 這次會動到幾段
   int get count => _orig.length;
+
+  /// 那一軌每一段的樣子（哪幾段、順序、取哪一截、速度）
+  String get signature => [
+    for (final c in vlogSegments(tl, track: track))
+      '${c.id}:${c.trimStart}:${c.trimEnd}:${c.speed}',
+  ].join('|');
+
+  /// 時間軸跟上次改完（或剛記下）的時候一模一樣：段沒增減、沒換順序，
+  /// 取的那一截跟速度也沒被別的操作（拖把手、換段、上一步……）動過
+  bool get isCurrent => signature == _sig;
 
   /// 每一段都改成 [sec] 秒（原片不夠長的整支），整軌接齊
   void apply(double sec) {
@@ -128,6 +146,19 @@ class VlogSecondsEdit {
       vlogSetLength(c, tl.sourceOf(c), sec);
     }
     vlogRelay(tl, track: track);
+    _sig = signature;
+  }
+
+  /// 只把 [c] 這一段（「這段」）從它原本那一截改成 [sec] 秒，整軌接齊
+  void applyOne(TimelineClip c, double sec) {
+    final o = _orig[c.id];
+    if (o != null) {
+      c.trimStart = o.$1;
+      c.trimEnd = o.$2;
+    }
+    vlogSetLength(c, tl.sourceOf(c), sec);
+    vlogRelay(tl, track: track);
+    _sig = signature;
   }
 }
 

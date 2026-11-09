@@ -123,6 +123,43 @@ void main() {
     _expectContiguous(tl);
   });
 
+  test('一直開著的控制列：同一串改動接著用原本那一截；中間被別的操作動過就重記', () {
+    final tl = _vlog([10, 10, 10]);
+    final segs = vlogSegments(tl);
+    segs[0].trimStart = 8; // 換到靠結尾的那一截
+    segs[0].trimEnd = 10;
+    final edit = VlogSecondsEdit(tl);
+    expect(edit.isCurrent, isTrue);
+    // 這段：只改它，夾到結尾；別段不動
+    edit.applyOne(segs[0], 5);
+    expect(segs[0].trimStart, closeTo(5, 1e-9));
+    expect(segs[0].trimEnd, closeTo(10, 1e-9));
+    expect(segs[1].length, closeTo(2, 1e-9));
+    expect(edit.isCurrent, isTrue, reason: '自己改的不算被動過');
+    _expectContiguous(tl);
+    // 每段：從原本那一截重算，夾過的那段回到 8~10
+    edit.apply(2);
+    expect(segs[0].trimStart, closeTo(8, 1e-9));
+    expect(segs[0].trimEnd, closeTo(10, 1e-9));
+    // 這段改完再改每段（同一串）：個別改過的一起改回去
+    edit.applyOne(segs[1], 3.5);
+    edit.apply(1);
+    for (final c in segs) {
+      expect(c.length, closeTo(1, 1e-9));
+    }
+    expect((segs[1].trimStart + segs[1].trimEnd) / 2, closeTo(5, 1e-9));
+    _expectContiguous(tl);
+
+    // 別的操作（拖把手、換段、上一步）動過：不再是同一串
+    segs[2].trimEnd += 0.4;
+    expect(edit.isCurrent, isFalse);
+    final next = VlogSecondsEdit(tl);
+    expect(next.isCurrent, isTrue);
+    // 少一段（刪掉）也算
+    tl.clips.remove(segs[2]);
+    expect(next.isCurrent, isFalse);
+  });
+
   test('素材比每段短：算跟著走，每段改短時跟著變短、改長時維持整支', () {
     final tl = _vlog([10, 1.2]);
     final short = vlogSegments(tl)[1];
